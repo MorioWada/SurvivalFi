@@ -1,0 +1,57 @@
+<!-- Auth Screen -->
+<div id="auth-screen" class="screen active">
+  <div class="auth-wrapper">
+    <div class="auth-left">
+      <div class="auth-brand">
+        <div class="brand-icon">
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+            <rect width="40" height="40" rx="12" fill="url(#grad1)"/>
+            <path d="M12 28V16l8-6 8 6v12H24v-8h-8v8H12z" fill="#fff"/>
+            <defs><linearGradient id="grad1" x1="0" y1="0" x2="40" y2="40"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>
+          </svg>
+        </div>
+        <h1>SurvivalFi</h1>
+        <p>Track expenses. Predict your financial survival. Stay in control.</p>
+      </div>
+      <div class="auth-features">
+        <div class="feature-item">
+          <div class="feature-icon">📊</div>
+          <span>Smart Survival Score</span>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">🔔</div>
+          <span>Impulsive Spend Alerts</span>
+        </div>
+        <div class="feature-item">
+          <div class="feature-icon">💰</div>
+          <span>Income & Expense Tracking</span>
+        </div>
+      </div>
+    </div>
+    <div class="auth-right">
+      <div class="auth-card">
+        <h2 id="auth-title">Sign In</h2>
+        <form id="auth-form">
+          <div class="form-group">
+            <label for="auth-email">Email</label>
+            <input type="email" id="auth-email" placeholder="you@example.com" required>
+          </div>
+          <div class="form-group">
+            <label for="auth-password">Password</label>
+            <input type="password" id="auth-password" placeholder="••••••••" required>
+          </div>
+          <button type="submit" id="auth-submit" class="btn btn-primary btn-full">Sign In</button>
+        </form>
+        <div class="auth-divider"><span>or</span></div>
+        <button id="auth-toggle" class="btn btn-outline btn-full">Create Account</button>
+        <div class="auth-supabase-note">
+          <label for="supabase-url">Supabase URL</label>
+          <input type="url" id="supabase-url" placeholder="https://xxxxx.supabase.co">
+          <label for="supabase-key">Supabase Anon Key</label>
+          <input type="text" id="supabase-key" placeholder="eyJhbGciOiJIUzI1NiIs...">
+          <p class="hint">Connect your Supabase project to enable cloud sync. Works offline without it.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

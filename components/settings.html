@@ -1,0 +1,42 @@
+<!-- Settings Tab -->
+<section id="tab-settings" class="tab-content">
+  <div class="card">
+    <div class="card-header"><h3>Notification Settings</h3></div>
+    <div class="settings-form">
+      <div class="form-group">
+        <label for="threshold-setting">Survival Score Alert Threshold (%)</label>
+        <input type="number" id="threshold-setting" min="5" max="50" value="20" step="5">
+        <p class="hint">You'll be notified when your survival score drops below this value.</p>
+      </div>
+      <div class="form-group">
+        <label for="impulsive-threshold">Impulsive Spending Threshold (%)</label>
+        <input type="number" id="impulsive-threshold" min="5" max="50" value="10" step="1">
+        <p class="hint">Spending more than this percentage of total income on entertainment/shopping is flagged as impulsive.</p>
+      </div>
+      <button id="save-settings" class="btn btn-primary">Save Settings</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3>Monthly Budget Setup</h3></div>
+    <div class="settings-form">
+      <div class="form-group">
+        <label for="monthly-income">Expected Monthly Income</label>
+        <input type="number" id="monthly-income" placeholder="0.00" step="0.01" min="0">
+      </div>
+      <div class="form-group">
+        <label for="monthly-budget">Monthly Budget Limit</label>
+        <input type="number" id="monthly-budget" placeholder="0.00" step="0.01" min="0">
+      </div>
+      <button id="save-budget" class="btn btn-primary">Save Budget</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3>Data Management</h3></div>
+    <div class="settings-form">
+      <button id="export-data" class="btn btn-outline">Export Data (JSON)</button>
+      <button id="clear-data" class="btn btn-danger">Clear All Data</button>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,113 @@
+<!-- Dashboard Tab -->
+<section id="tab-dashboard" class="tab-content active">
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-icon green">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+      </div>
+      <div class="stat-info">
+        <span class="stat-label">Total Income</span>
+        <span class="stat-value" id="stat-income">$0.00</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon red">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </div>
+      <div class="stat-info">
+        <span class="stat-label">Total Expenses</span>
+        <span class="stat-value" id="stat-expenses">$0.00</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon blue">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      </div>
+      <div class="stat-info">
+        <span class="stat-label">Current Balance</span>
+        <span class="stat-value" id="stat-balance">$0.00</span>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon purple" id="survival-card">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <div class="stat-info">
+        <span class="stat-label">Survival Score</span>
+        <span class="stat-value" id="stat-survival">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Add -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Quick Add Transaction</h3>
+    </div>
+    <form id="quick-add-form" class="quick-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>Type</label>
+          <select id="qa-type">
+            <option value="expense">Expense</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Amount</label>
+          <input type="number" id="qa-amount" placeholder="0.00" step="0.01" min="0" required>
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="qa-category">
+            <option value="food">🍜 Food</option>
+            <option value="transportation">🚗 Transportation</option>
+            <option value="housing">🏠 Housing</option>
+            <option value="utilities">💡 Utilities</option>
+            <option value="entertainment">🎬 Entertainment</option>
+            <option value="healthcare">🏥 Healthcare</option>
+            <option value="shopping">🛍️ Shopping</option>
+            <option value="education">📚 Education</option>
+            <option value="salary">💼 Salary</option>
+            <option value="freelance">💻 Freelance</option>
+            <option value="investment">📈 Investment</option>
+            <option value="other">📦 Other</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Expense Type</label>
+          <select id="qa-expense-type">
+            <option value="variable">Variable</option>
+            <option value="fixed">Fixed</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group flex-grow">
+          <label>Description</label>
+          <input type="text" id="qa-desc" placeholder="e.g. Grocery shopping">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Transaction</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Category Breakdown -->
+  <div class="card">
+    <div class="card-header"><h3>Expense Breakdown by Category</h3></div>
+    <div id="category-breakdown" class="pie-breakdown">
+      <p class="empty-state">Add expenses to see breakdown</p>
+    </div>
+  </div>
+
+  <!-- Recent Transactions -->
+  <div class="card">
+    <div class="card-header">
+      <h3>Recent Transactions</h3>
+      <button class="btn-sm" data-tab="transactions">View All</button>
+    </div>
+    <div class="transactions-list" id="recent-transactions">
+      <p class="empty-state">No transactions yet. Add one above!</p>
+    </div>
+  </div>
+</section>

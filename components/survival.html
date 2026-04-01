@@ -1,0 +1,65 @@
+<!-- Survival Score Tab -->
+<section id="tab-survival" class="tab-content">
+  <div class="survival-hero">
+    <div class="survival-ring" id="survival-ring">
+      <svg viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="85" fill="none" stroke="var(--survival-ring-track)" stroke-width="12"/>
+        <circle id="survival-circle" cx="100" cy="100" r="85" fill="none" stroke="url(#survGrad)" stroke-width="12" stroke-linecap="round" stroke-dasharray="534" stroke-dashoffset="534" transform="rotate(-90 100 100)"/>
+        <defs>
+          <linearGradient id="survGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#ef4444"/>
+            <stop offset="50%" stop-color="#f59e0b"/>
+            <stop offset="100%" stop-color="#22c55e"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <div class="survival-center">
+        <span class="survival-number" id="survival-number">--</span>
+        <span class="survival-label">Survival Score</span>
+      </div>
+    </div>
+    <div class="survival-status" id="survival-status">Calculating...</div>
+    <p class="survival-desc">Your survival score predicts how well you'll manage financially until the end of the month based on your current balance, fixed expenses, remaining days, and spending patterns.</p>
+  </div>
+
+  <div class="survival-factors">
+    <h3>Score Factors</h3>
+    <div class="factors-grid">
+      <div class="factor-card">
+        <div class="factor-header">
+          <span>Days Remaining</span>
+          <span class="factor-value" id="factor-days">--</span>
+        </div>
+        <div class="factor-bar"><div class="factor-fill" id="factor-days-bar"></div></div>
+      </div>
+      <div class="factor-card">
+        <div class="factor-header">
+          <span>Daily Budget</span>
+          <span class="factor-value" id="factor-daily">--</span>
+        </div>
+        <div class="factor-bar"><div class="factor-fill" id="factor-daily-bar"></div></div>
+      </div>
+      <div class="factor-card">
+        <div class="factor-header">
+          <span>Fixed Expenses Coverage</span>
+          <span class="factor-value" id="factor-fixed">--</span>
+        </div>
+        <div class="factor-bar"><div class="factor-fill" id="factor-fixed-bar"></div></div>
+      </div>
+      <div class="factor-card">
+        <div class="factor-header">
+          <span>Impulsive Spending Risk</span>
+          <span class="factor-value" id="factor-impulsive">--</span>
+        </div>
+        <div class="factor-bar"><div class="factor-fill" id="factor-impulsive-bar"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3>Impulsive Spending Analysis</h3></div>
+    <div id="impulsive-analysis">
+      <p class="empty-state">Add transactions to see analysis</p>
+    </div>
+  </div>
+</section>

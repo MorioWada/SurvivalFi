@@ -1089,11 +1089,6 @@
     return sign + 'Rp' + Math.abs(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  function formatDate(dateStr) {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  }
-
   function formatDateTime(dateStr) {
     const d = new Date(dateStr);
     const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });

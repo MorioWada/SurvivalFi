@@ -762,7 +762,6 @@ select { cursor: pointer; }
 }
 .notif-dot.danger { background: var(--red); }
 .notif-dot.warning { background: var(--orange); }
-.notif-dot.info { background: var(--blue); }
 .notif-text { font-size: 0.85rem; line-height: 1.4; }
 .notif-time { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.2rem; }
 
@@ -792,7 +791,6 @@ select { cursor: pointer; }
 }
 .toast.success { border-left: 3px solid var(--green); }
 .toast.error { border-left: 3px solid var(--red); }
-.toast.warning { border-left: 3px solid var(--orange); }
 .toast.info { border-left: 3px solid var(--blue); }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 @keyframes fadeOut { to { opacity: 0; transform: translateX(100%); } }

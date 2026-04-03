@@ -42,8 +42,8 @@ const CATEGORIES = {
   const $$ = (sel) => document.querySelectorAll(sel);
 
   // ===== Initialization =====
-  function init() {
-    loadFromStorage();
+  async function init() {
+    await loadFromStorage();
     setupAuth();
     setupNavigation();
     setupMobileMenu();
@@ -63,7 +63,7 @@ const CATEGORIES = {
   }
 
   // ===== Storage =====
-  function loadFromStorage() {
+  async function loadFromStorage() {
     try {
       const saved = localStorage.getItem('survivalfi_data');
       if (saved) {
@@ -76,6 +76,19 @@ const CATEGORIES = {
     } catch (e) {
       console.warn('Failed to load storage', e);
     }
+    
+    // If we have a user, try to load fresh data from Supabase
+    if (state.supabase && state.user?.id) {
+      try {
+        await Promise.all([
+          loadTransactionsFromSupabase(),
+          loadNotificationsFromSupabase(),
+          loadSettingsFromSupabase()
+        ]);
+      } catch (err) {
+        console.warn('Failed to load some data from Supabase:', err);
+      }
+    }
   }
 
   function saveToStorage() {
@@ -86,6 +99,10 @@ const CATEGORIES = {
         notifications: state.notifications,
         settings: state.settings,
       }));
+      // Sync with Supabase in background
+      if (state.supabase && state.user?.id) {
+        syncSettingsToSupabase().catch(() => {});
+      }
     } catch (e) {
       console.warn('Failed to save storage', e);
     }
@@ -131,12 +148,19 @@ const CATEGORIES = {
           if (state.isRegistering) {
             result = await state.supabase.auth.signUp({ email, password });
             if (result.error) throw result.error;
+            state.user = { email: result.data.user.email, id: result.data.user.id };
+            await loadTransactionsFromSupabase();
+            await initializeDefaultCategories();
+            saveToStorage();
+            showApp();
             showToast('Account created! Check your email for verification.', 'success');
           } else {
             result = await state.supabase.auth.signInWithPassword({ email, password });
             if (result.error) throw result.error;
             state.user = { email: result.data.user.email, id: result.data.user.id };
             await loadTransactionsFromSupabase();
+            await loadNotificationsFromSupabase();
+            await loadSettingsFromSupabase();
             saveToStorage();
             showApp();
             showToast('Signed in successfully!', 'success');
@@ -156,6 +180,171 @@ const CATEGORIES = {
         showToast(state.isRegistering ? 'Account created (local mode)!' : 'Signed in (local mode)!', 'success');
       }
     });
+  }
+
+  // ===== Supabase Database Operations =====
+  async function loadTransactionsFromSupabase() {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      const { data, error } = await state.supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', state.user.id)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      if (data) {
+        state.transactions = data.map(t => ({
+          id: t.id,
+          type: t.type,
+          amount: t.amount,
+          category: t.category_key,
+          expenseType: t.expense_type,
+          description: t.description,
+          date: t.date,
+          createdAt: t.created_at,
+        }));
+      }
+    } catch (err) {
+      console.warn('Failed to load from Supabase:', err);
+    }
+  }
+
+  async function initializeDefaultCategories() {
+    if (!state.supabase) return;
+    try {
+      const { data: existingCategories, error: checkError } = await state.supabase
+        .from('categories')
+        .select('key');
+      if (checkError && checkError.code !== 'PGRST116') throw checkError;
+      if (!existingCategories || existingCategories.length === 0) {
+        const defaultCategories = [
+          { key: 'food', emoji: '🍜', label: 'Food', color: '#f59e0b', type: 'expense', expense_subtype: JSON.stringify(['variable', 'fixed']) },
+          { key: 'transportation', emoji: '🚗', label: 'Transportation', color: '#3b82f6', type: 'expense', expense_subtype: JSON.stringify(['variable', 'fixed']) },
+          { key: 'housing', emoji: '🏠', label: 'Housing', color: '#8b5cf6', type: 'expense', expense_subtype: JSON.stringify(['fixed']) },
+          { key: 'utilities', emoji: '💡', label: 'Utilities', color: '#eab308', type: 'expense', expense_subtype: JSON.stringify(['fixed', 'variable']) },
+          { key: 'entertainment', emoji: '🎬', label: 'Entertainment', color: '#ec4899', type: 'expense', expense_subtype: JSON.stringify(['variable']) },
+          { key: 'healthcare', emoji: '🏥', label: 'Healthcare', color: '#ef4444', type: 'expense', expense_subtype: JSON.stringify(['fixed', 'variable']) },
+          { key: 'shopping', emoji: '🛍️', label: 'Shopping', color: '#14b8a6', type: 'expense', expense_subtype: JSON.stringify(['variable']) },
+          { key: 'education', emoji: '📚', label: 'Education', color: '#6366f1', type: 'expense', expense_subtype: JSON.stringify(['fixed']) },
+          { key: 'salary', emoji: '💼', label: 'Salary', color: '#22c55e', type: 'income', expense_subtype: null },
+          { key: 'freelance', emoji: '💻', label: 'Freelance', color: '#06b6d4', type: 'income', expense_subtype: null },
+          { key: 'investment', emoji: '📈', label: 'Investment', color: '#a855f7', type: 'income', expense_subtype: null },
+          { key: 'other', emoji: '📦', label: 'Other', color: '#94a3b8', type: 'both', expense_subtype: JSON.stringify(['variable', 'fixed']) }
+        ];
+        const { error: insertError } = await state.supabase.from('categories').insert(defaultCategories);
+        if (insertError) throw insertError;
+      }
+    } catch (err) {
+      console.warn('Failed to initialize categories:', err);
+    }
+  }
+
+  async function syncTransactionToSupabase(tx) {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      await state.supabase.from('transactions').upsert({
+        id: tx.id,
+        user_id: state.user.id,
+        type: tx.type,
+        amount: tx.amount,
+        category_key: tx.category,
+        expense_type: tx.expenseType,
+        description: tx.description,
+        date: tx.date,
+        created_at: tx.createdAt,
+      });
+    } catch (err) {
+      console.warn('Sync failed:', err);
+    }
+  }
+
+  async function deleteTransactionFromSupabase(txId) {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      await state.supabase.from('transactions').delete().eq('id', txId);
+    } catch (err) {
+      console.warn('Delete sync failed:', err);
+    }
+  }
+
+  async function loadNotificationsFromSupabase() {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      const { data, error } = await state.supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', state.user.id)
+        .order('timestamp', { ascending: false });
+      if (error) throw error;
+      if (data) {
+        state.notifications = data.map(n => ({
+          id: n.id,
+          type: n.type,
+          text: n.text,
+          timestamp: n.timestamp,
+          persistent: n.persistent
+        }));
+      }
+    } catch (err) {
+      console.warn('Failed to load notifications from Supabase:', err);
+    }
+  }
+
+  async function syncNotificationToSupabase(notif) {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      await state.supabase.from('notifications').upsert({
+        id: notif.id,
+        user_id: state.user.id,
+        type: notif.type,
+        text: notif.text,
+        timestamp: notif.timestamp,
+        persistent: notif.persistent
+      });
+    } catch (err) {
+      console.warn('Failed to sync notification to Supabase:', err);
+    }
+  }
+
+  async function loadSettingsFromSupabase() {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      const { data, error } = await state.supabase
+        .from('settings')
+        .select('*')
+        .eq('user_id', state.user.id)
+        .single();
+      if (error && error.code !== 'PGRST116') throw error;
+      if (data) {
+        state.settings = {
+          survivalThreshold: data.survival_threshold,
+          impulsiveThreshold: data.impulsive_threshold,
+          monthlyIncome: data.monthly_income,
+          monthlyFixed: data.monthly_fixed,
+          monthlyBudget: data.monthly_budget,
+          theme: data.theme
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to load settings from Supabase:', err);
+    }
+  }
+
+  async function syncSettingsToSupabase() {
+    if (!state.supabase || !state.user?.id) return;
+    try {
+      await state.supabase.from('settings').upsert({
+        user_id: state.user.id,
+        monthly_income: state.settings.monthlyIncome,
+        monthly_fixed: state.settings.monthlyFixed,
+        monthly_budget: state.settings.monthlyBudget,
+        survival_threshold: state.settings.survivalThreshold,
+        impulsive_threshold: state.settings.impulsiveThreshold,
+        theme: state.settings.theme
+      });
+    } catch (err) {
+      console.warn('Failed to sync settings to Supabase:', err);
+    }
   }
 
   async function loadTransactionsFromSupabase() {
@@ -801,6 +990,7 @@ return `
 
 // ===== Impulsive Detection =====
 // For displaying impulsive flag on individual transactions (recent transactions list)
+// Flag transaction as impulsive if the transaction amount itself exceeds the threshold (per-transaction evaluation)
 function isImpulsiveExpense(tx) {
     // Only variable expenses can be flagged as impulsive
     if (tx.type !== 'expense' || tx.expenseType !== 'variable') return false;
@@ -817,11 +1007,8 @@ function isImpulsiveExpense(tx) {
     const totalIncome = monthTx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
     if (totalIncome <= 0) return false;
 
-    const categoryTotal = monthTx
-        .filter(t => t.type === 'expense' && t.category === tx.category)
-        .reduce((s, t) => s + t.amount, 0);
-
-    return (categoryTotal / totalIncome) * 100 > state.settings.impulsiveThreshold;
+    // Per-transaction check: does THIS transaction exceed the impulsive threshold as % of income?
+    return (tx.amount / totalIncome) * 100 > state.settings.impulsiveThreshold;
 }
 
 // For survival score analysis - check if category has ANY impulsive transactions
@@ -1001,7 +1188,9 @@ function isCategoryImpulsive(category) {
     // Avoid duplicates
     const exists = state.notifications.some(n => n.text === notif.text);
     if (!exists) {
-      state.notifications.unshift({ ...notif, id: 'n_' + Date.now() });
+      const newNotif = { ...notif, id: 'n_' + Date.now() };
+      state.notifications.unshift(newNotif);
+      syncNotificationToSupabase(newNotif).catch(() => {});
     }
   }
 
@@ -1300,5 +1489,5 @@ function updateTxCategories() {
   }
 
   // ===== Boot =====
-  init();
+  init().catch(err => console.error('Init failed:', err));
 })();

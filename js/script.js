@@ -13,26 +13,27 @@
       survivalThreshold: 20,
       impulsiveThreshold: 10,
       monthlyIncome: 0,
+      monthlyFixed: 0,
       monthlyBudget: 0,
     },
     isRegistering: false,
   };
 
-  // ===== Category Config =====
-  const CATEGORIES = {
-    food:            { emoji: '🍜', label: 'Food',            color: '#f59e0b', type: 'expense' },
-    transportation:  { emoji: '🚗', label: 'Transportation',  color: '#3b82f6', type: 'expense' },
-    housing:         { emoji: '🏠', label: 'Housing',          color: '#8b5cf6', type: 'expense' },
-    utilities:       { emoji: '💡', label: 'Utilities',        color: '#eab308', type: 'expense' },
-    entertainment:   { emoji: '🎬', label: 'Entertainment',    color: '#ec4899', type: 'expense' },
-    healthcare:      { emoji: '🏥', label: 'Healthcare',       color: '#ef4444', type: 'expense' },
-    shopping:        { emoji: '🛍️', label: 'Shopping',         color: '#14b8a6', type: 'expense' },
-    education:       { emoji: '📚', label: 'Education',        color: '#6366f1', type: 'expense' },
+// ===== Category Config =====
+const CATEGORIES = {
+    food:            { emoji: '🍜', label: 'Food',            color: '#f59e0b', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
+    transportation:  { emoji: '🚗', label: 'Transportation',  color: '#3b82f6', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
+    housing:         { emoji: '🏠', label: 'Housing',          color: '#8b5cf6', type: 'expense', expenseSubtype: ['fixed'] },
+    utilities:       { emoji: '💡', label: 'Utilities',        color: '#eab308', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
+    entertainment:   { emoji: '🎬', label: 'Entertainment',    color: '#ec4899', type: 'expense', expenseSubtype: ['variable'] },
+    healthcare:      { emoji: '🏥', label: 'Healthcare',       color: '#ef4444', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
+    shopping:        { emoji: '🛍️', label: 'Shopping',         color: '#14b8a6', type: 'expense', expenseSubtype: ['variable'] },
+    education:       { emoji: '📚', label: 'Education',        color: '#6366f1', type: 'expense', expenseSubtype: ['fixed'] },
     salary:          { emoji: '💼', label: 'Salary',           color: '#22c55e', type: 'income' },
     freelance:       { emoji: '💻', label: 'Freelance',        color: '#06b6d4', type: 'income' },
     investment:      { emoji: '📈', label: 'Investment',       color: '#a855f7', type: 'income' },
-    other:           { emoji: '📦', label: 'Other',            color: '#94a3b8', type: 'both' },
-  };
+    other:           { emoji: '📦', label: 'Other',            color: '#94a3b8', type: 'both', expenseSubtype: ['variable', 'fixed'] },
+};
 
   const IMPULSIVE_CATEGORIES = ['entertainment', 'shopping'];
 
@@ -293,39 +294,47 @@
     });
   }
 
-  // ===== Quick Add =====
-  function setupQuickAdd() {
-    const form = $('#quick-add-form');
-    const typeSelect = $('#qa-type');
-    const expenseTypeGroup = $('#qa-expense-type');
+// ===== Quick Add =====
+function setupQuickAdd() {
+     const form = $('#quick-add-form');
+     const typeSelect = $('#qa-type');
+     const expenseTypeSelect = $('#qa-expense-type');
+     const expenseTypeGroup = $('#qa-expense-type');
 
-    typeSelect.addEventListener('change', () => {
-      const isIncome = typeSelect.value === 'income';
-      expenseTypeGroup.closest('.form-group').style.display = isIncome ? 'none' : '';
-    });
-
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const amount = parseFloat($('#qa-amount').value);
-      if (!amount || amount <= 0) {
-        showToast('Enter a valid amount', 'error');
-        return;
-      }
-
-      const tx = createTransaction({
-        type: typeSelect.value,
-        amount,
-        category: $('#qa-category').value,
-        expenseType: $('#qa-expense-type').value,
-        description: $('#qa-desc').value || CATEGORIES[$('#qa-category').value]?.label || 'Transaction',
+     typeSelect.addEventListener('change', () => {
+        const isIncome = typeSelect.value === 'income';
+        expenseTypeGroup.closest('.form-group').style.display = isIncome ? 'none' : '';
+        updateQaCategories();
       });
 
-      addTransaction(tx);
-      form.reset();
-      typeSelect.value = 'expense';
-      expenseTypeGroup.closest('.form-group').style.display = '';
-      showToast('Transaction added!', 'success');
-    });
+     expenseTypeSelect.addEventListener('change', () => {
+        updateQaCategoriesByExpenseType(typeSelect.value, expenseTypeSelect.value);
+      });
+
+form.addEventListener('submit', (e) => {
+       e.preventDefault();
+       const amount = parseFloat($('#qa-amount').value);
+       if (!amount || amount <= 0) {
+         showToast('Enter a valid amount', 'error');
+         return;
+       }
+
+       const tx = createTransaction({
+         type: typeSelect.value,
+         amount,
+         category: $('#qa-category').value,
+         expenseType: $('#qa-expense-type').value,
+         description: $('#qa-desc').value || CATEGORIES[$('#qa-category').value]?.label || 'Transaction',
+       });
+
+addTransaction(tx);
+        form.reset();
+        typeSelect.value = 'expense';
+        expenseTypeSelect.value = 'variable';
+        expenseTypeGroup.closest('.form-group').style.display = '';
+        updateQaCategories();
+        showToast('Transaction added!', 'success');
+      });
   }
 
   // ===== Transaction Form (Modal) =====
@@ -333,50 +342,52 @@
     const form = $('#transaction-form');
 
     // Toggle buttons
-    $$('#transaction-form .toggle-group').forEach(group => {
-      const toggles = group.querySelectorAll('.toggle');
-      toggles.forEach(t => {
-        t.addEventListener('click', () => {
-          toggles.forEach(b => b.classList.remove('active'));
-          t.classList.add('active');
-          if (t.dataset.value) {
-            $('#tx-type').value = t.dataset.value;
-            const isIncome = t.dataset.value === 'income';
-            $('#expense-type-group').style.display = isIncome ? 'none' : '';
-          }
-          if (t.dataset.expense) {
-            $('#tx-expense-type').value = t.dataset.expense;
-          }
-        });
-      });
-    });
+$$('#transaction-form .toggle-group').forEach(group => {
+       const toggles = group.querySelectorAll('.toggle');
+       toggles.forEach(t => {
+         t.addEventListener('click', () => {
+           toggles.forEach(b => b.classList.remove('active'));
+           t.classList.add('active');
+           if (t.dataset.value) {
+             $('#tx-type').value = t.dataset.value;
+             const isIncome = t.dataset.value === 'income';
+             $('#expense-type-group').style.display = isIncome ? 'none' : '';
+             updateTxCategories();
+           }
+           if (t.dataset.expense) {
+             $('#tx-expense-type').value = t.dataset.expense;
+           }
+         });
+       });
+     });
 
     // Set default date
     $('#tx-date').value = new Date().toISOString().split('T')[0];
 
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const amount = parseFloat($('#tx-amount').value);
-      if (!amount || amount <= 0) {
-        showToast('Enter a valid amount', 'error');
-        return;
-      }
+form.addEventListener('submit', (e) => {
+       e.preventDefault();
+       const amount = parseFloat($('#tx-amount').value);
+       if (!amount || amount <= 0) {
+         showToast('Enter a valid amount', 'error');
+         return;
+       }
 
-      const tx = createTransaction({
-        type: $('#tx-type').value,
-        amount,
-        category: $('#tx-category').value,
-        expenseType: $('#tx-expense-type').value,
-        description: $('#tx-desc').value || CATEGORIES[$('#tx-category').value]?.label || 'Transaction',
-        date: $('#tx-date').value,
-      });
+       const tx = createTransaction({
+         type: $('#tx-type').value,
+         amount,
+         category: $('#tx-category').value,
+         expenseType: $('#tx-expense-type').value,
+         description: $('#tx-desc').value || CATEGORIES[$('#tx-category').value]?.label || 'Transaction',
+         date: $('#tx-date').value,
+       });
 
-      addTransaction(tx);
-      closeModal();
-      form.reset();
-      $('#tx-date').value = new Date().toISOString().split('T')[0];
-      showToast('Transaction added!', 'success');
-    });
+       addTransaction(tx);
+       closeModal();
+       form.reset();
+       $('#tx-date').value = new Date().toISOString().split('T')[0];
+       updateTxCategories();
+       showToast('Transaction added!', 'success');
+     });
   }
 
   // ===== Transaction CRUD =====
@@ -479,27 +490,27 @@
       if (isImpulsive) badges.push('<span class="tx-badge impulsive">impulsive</span>');
     }
 
-    return `
-      <div class="transaction-item" data-id="${tx.id}">
-        <div class="tx-icon ${tx.type}">${cat.emoji}</div>
-        <div class="tx-details">
-          <div class="tx-text">
-            <div class="tx-desc">${escapeHtml(tx.description)}</div>
-            <div class="tx-meta">
-              <span>${cat.label}</span>
-              ${showDate ? `<span>${formatDateTime(tx.createdAt || tx.date)}</span>` : ''}
-            </div>
-          </div>
-          ${badges.length ? `<div class="tx-badges">${badges.join('')}</div>` : ''}
-        </div>
-        <span class="tx-amount ${tx.type}">${tx.type === 'expense' ? '-' : '+'}${formatCurrency(tx.amount)}</span>
-        <div class="tx-actions">
-          <button class="btn-icon delete-tx" data-id="${tx.id}" title="Delete">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-          </button>
-        </div>
-      </div>
-    `;
+return `
+       <div class="transaction-item" data-id="${tx.id}">
+         <div class="tx-icon ${tx.type}">${cat.emoji}</div>
+         <div class="tx-details">
+           <div class="tx-text">
+             <div class="tx-desc">${escapeHtml(tx.description)}</div>
+             <div class="tx-meta">
+               <span>${cat.label}</span>
+               ${showDate ? `<span>${formatDateTime(tx.createdAt || tx.date)}</span>` : ''}
+             </div>
+           </div>
+           ${badges.length ? `<div class="tx-badges" style="display: flex; flex-direction: column; align-items: center; gap: 2px;">${badges.join('')}</div>` : ''}
+         </div>
+         <span class="tx-amount ${tx.type}">${tx.type === 'expense' ? '-' : '+'}${formatCurrency(tx.amount)}</span>
+         <div class="tx-actions">
+           <button class="btn-icon delete-tx" data-id="${tx.id}" title="Delete">
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+           </button>
+         </div>
+       </div>
+     `;
   }
 
   function attachTransactionEvents(container) {
@@ -591,23 +602,106 @@
     const totalExpenses = monthTx.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
     const currentBalance = totalIncome - totalExpenses;
 
-    const fixedExpenses = monthTx
+    const monthlyIncome = state.settings.monthlyIncome || totalIncome;
+    const monthlyFixed = state.settings.monthlyFixed || 0;
+
+    const fixedPaidThisMonth = monthTx
       .filter(t => t.type === 'expense' && t.expenseType === 'fixed')
       .reduce((s, t) => s + t.amount, 0);
+    const variablePaidThisMonth = monthTx
+      .filter(t => t.type === 'expense' && t.expenseType === 'variable')
+      .reduce((s, t) => s + t.amount, 0);
 
-    const monthlyIncome = state.settings.monthlyIncome || totalIncome;
-    const remainingFixed = estimateRemainingFixed(monthTx, daysRemaining, daysInMonth);
+    let fixedBalance = Math.max(0, monthlyFixed - fixedPaidThisMonth);
+    let variableBalance = Math.max(0, currentBalance - fixedBalance);
 
-    // Score factors (0-100 each, weighted)
-    let score = 50; // base
+    let fixedCoverageStatus = 'covered';
+    if (monthlyFixed > 0) {
+      if (fixedPaidThisMonth >= monthlyFixed) {
+        fixedCoverageStatus = 'covered';
+        fixedBalance = 0;
+        variableBalance = currentBalance;
+      } else if (currentBalance >= monthlyFixed) {
+        fixedCoverageStatus = 'covered';
+        variableBalance = currentBalance - monthlyFixed;
+        fixedBalance = 0;
+      } else if (fixedPaidThisMonth > 0) {
+        const remainingNeeded = monthlyFixed - fixedPaidThisMonth;
+        if (currentBalance >= remainingNeeded) {
+          fixedCoverageStatus = 'covered';
+          fixedBalance = 0;
+          variableBalance = currentBalance - remainingNeeded;
+        } else {
+          fixedCoverageStatus = 'partial';
+          fixedBalance = remainingNeeded - currentBalance;
+          variableBalance = 0;
+        }
+      } else if (currentBalance >= monthlyFixed) {
+        fixedCoverageStatus = 'covered';
+        fixedBalance = 0;
+        variableBalance = currentBalance;
+      } else {
+        fixedCoverageStatus = 'partial';
+        fixedBalance = monthlyFixed - currentBalance;
+        variableBalance = 0;
+      }
+    } else {
+      if (fixedPaidThisMonth > 0 && currentBalance < fixedPaidThisMonth) {
+        fixedCoverageStatus = 'uncovered';
+        fixedBalance = fixedPaidThisMonth - currentBalance;
+        variableBalance = 0;
+      }
+    }
 
-    // Factor 1: Balance ratio (how much balance vs income)
-    if (monthlyIncome > 0) {
+    const avgVariableSpending = dayOfMonth > 0 ? variablePaidThisMonth / dayOfMonth : 0;
+    const dailyVariableBudget = daysInMonth > 0 && variableBalance > 0 ? variableBalance / daysRemaining : 0;
+
+    let score = 50;
+    let fixedStatus = 'good';
+
+    if (monthlyFixed > 0) {
+      if (fixedCoverageStatus === 'covered') {
+        score += 15;
+        fixedStatus = 'good';
+      } else if (fixedCoverageStatus === 'partial') {
+        const coveredRatio = fixedPaidThisMonth / monthlyFixed;
+        score += coveredRatio * 10;
+        fixedStatus = 'moderate';
+      } else {
+        score = Math.max(0, (currentBalance / monthlyFixed) * 40);
+        fixedStatus = 'at-risk';
+      }
+    } else if (fixedPaidThisMonth > 0) {
+      if (variableBalance > 0) {
+        if (avgVariableSpending <= dailyVariableBudget) {
+          score += 10;
+          fixedStatus = 'good';
+        } else if (avgVariableSpending <= dailyVariableBudget * 1.1) {
+          score += 5;
+          fixedStatus = 'moderate';
+        } else {
+          const overRatio = avgVariableSpending / dailyVariableBudget;
+          score -= Math.min((overRatio - 1) * 20, 30);
+          fixedStatus = 'at-risk';
+        }
+      } else {
+        score = 0;
+        fixedStatus = 'at-risk';
+      }
+      score += 10;
+    } else {
+      score += 10;
+    }
+
+    if (currentBalance <= 0) {
+      score = 0;
+    } else if (currentBalance < monthlyIncome * 0.1) {
+      score -= 15;
+    } else if (fixedBalance <= 0) {
       const balanceRatio = Math.max(0, currentBalance) / monthlyIncome;
       score += balanceRatio * 20;
     }
 
-    // Factor 2: Days remaining vs daily budget
     const dailyBudget = daysRemaining > 0 && currentBalance > 0 ? currentBalance / daysRemaining : 0;
     const avgDailySpend = dayOfMonth > 0 ? totalExpenses / dayOfMonth : 0;
     if (avgDailySpend > 0) {
@@ -617,40 +711,27 @@
       score += 10;
     }
 
-    // Factor 3: Fixed expenses coverage
-    if (remainingFixed > 0 && currentBalance > 0) {
-      const fixedCoverage = currentBalance / remainingFixed;
-      score += Math.min(fixedCoverage * 10, 15);
-    } else if (remainingFixed <= 0) {
-      score += 10;
-    }
-
-    // Factor 4: Impulsive spending penalty
-    const impulsiveTotal = monthTx
-      .filter(t => t.type === 'expense' && IMPULSIVE_CATEGORIES.includes(t.category))
-      .reduce((s, t) => s + t.amount, 0);
-    const impulsiveRatio = monthlyIncome > 0 ? (impulsiveTotal / monthlyIncome) * 100 : 0;
-    if (impulsiveRatio > state.settings.impulsiveThreshold) {
-      score -= (impulsiveRatio - state.settings.impulsiveThreshold) * 1.5;
-    }
-
-    // Factor 5: Negative balance penalty
-    if (currentBalance < 0) {
-      score -= 25;
-    }
-
-    // Factor 6: Low balance warning
-    if (currentBalance >= 0 && currentBalance < monthlyIncome * 0.1) {
-      score -= 10;
-    }
+// Calculate impulsive spending for survival score - only count if category has ANY impulsive transaction
+   const impulsiveCategories = [...new Set(
+     monthTx
+       .filter(t => t.type === 'expense' && t.expenseType === 'variable')
+       .filter(t => isCategoryImpulsive(t.category)) // Only categories with at least one impulsive transaction
+       .map(t => t.category)
+   )];
+   
+   const impulsiveTotal = monthTx
+       .filter(t => t.type === 'expense' && impulsiveCategories.includes(t.category))
+       .reduce((s, t) => s + t.amount, 0);
+   const impulsiveRatio = monthlyIncome > 0 ? (impulsiveTotal / monthlyIncome) * 100 : 0;
+   if (impulsiveRatio > state.settings.impulsiveThreshold) {
+     score -= (impulsiveRatio - state.settings.impulsiveThreshold) * 1.5;
+   }
 
     score = Math.max(0, Math.min(100, Math.round(score)));
 
-    // Update UI
     $('#stat-survival').textContent = score + '%';
     $('#stat-survival').className = 'stat-value ' + (score <= 20 ? 'danger' : score <= 50 ? 'warning' : 'safe');
 
-    // Survival ring
     const circle = $('#survival-circle');
     const circumference = 534;
     const offset = circumference - (score / 100) * circumference;
@@ -658,7 +739,6 @@
     circle.style.stroke = getSurvivalColor(score);
     $('#survival-number').textContent = score + '%';
 
-    // Status text
     let status, statusClass;
     if (score >= 70) { status = 'Financially Healthy'; statusClass = 'safe'; }
     else if (score >= 50) { status = 'Moderate — Stay Cautious'; statusClass = ''; }
@@ -669,7 +749,6 @@
     statusEl.textContent = status;
     statusEl.style.color = statusClass === 'safe' ? 'var(--green)' : statusClass === 'warning' ? 'var(--orange)' : statusClass === 'danger' ? 'var(--red)' : 'var(--text-primary)';
 
-    // Factors
     $('#factor-days').textContent = daysRemaining + ' days';
     $('#factor-days-bar').style.width = ((daysRemaining / daysInMonth) * 100) + '%';
 
@@ -678,8 +757,37 @@
     $('#factor-daily-bar').style.width = dailyPct + '%';
     $('#factor-daily-bar').style.background = dailyPct > 60 ? 'var(--green)' : dailyPct > 30 ? 'var(--orange)' : 'var(--red)';
 
-    $('#factor-fixed').textContent = remainingFixed > 0 ? formatCurrency(remainingFixed) + ' remaining' : 'Covered';
-    const fixedPct = currentBalance > 0 && remainingFixed > 0 ? Math.min((currentBalance / remainingFixed) * 100, 100) : (remainingFixed <= 0 ? 100 : 0);
+    let fixedLabel, fixedPct;
+    if (monthlyFixed > 0) {
+      if (fixedCoverageStatus === 'covered') {
+        fixedLabel = 'Fixed fully covered';
+        fixedPct = 100;
+      } else if (fixedBalance > 0) {
+        fixedLabel = formatCurrency(fixedBalance) + ' needed';
+        fixedPct = Math.min(((monthlyFixed - fixedBalance) / monthlyFixed) * 100, 100);
+      } else if (fixedPaidThisMonth > 0) {
+        fixedLabel = 'Fixed fully covered';
+        fixedPct = 100;
+      } else {
+        fixedLabel = formatCurrency(currentBalance) + ' for variable';
+        fixedPct = Math.min((currentBalance / monthlyFixed) * 100, 100);
+      }
+    } else if (fixedPaidThisMonth > 0) {
+      if (currentBalance >= fixedPaidThisMonth) {
+        fixedLabel = 'Fixed fully covered';
+        fixedPct = 100;
+      } else {
+        fixedLabel = formatCurrency(fixedPaidThisMonth - currentBalance) + ' needed';
+        fixedPct = Math.min((currentBalance / fixedPaidThisMonth) * 100, 100);
+      }
+    } else if (variableBalance > 0) {
+      fixedLabel = formatCurrency(variableBalance) + ' for variable';
+      fixedPct = Math.min((variableBalance / Math.max(monthlyIncome - monthlyFixed, 1)) * 100, 100);
+    } else {
+      fixedLabel = 'No budget left';
+      fixedPct = 0;
+    }
+    $('#factor-fixed').textContent = fixedLabel;
     $('#factor-fixed-bar').style.width = fixedPct + '%';
     $('#factor-fixed-bar').style.background = fixedPct > 60 ? 'var(--green)' : fixedPct > 30 ? 'var(--orange)' : 'var(--red)';
 
@@ -691,48 +799,55 @@
     return score;
   }
 
-  function estimateRemainingFixed(monthTx, daysRemaining, daysInMonth) {
-    const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
-    // Get fixed expense categories already spent this month
-    const fixedThisMonth = monthTx
-      .filter(t => t.type === 'expense' && t.expenseType === 'fixed')
-      .reduce((s, t) => s + t.amount, 0);
-
-    // Estimate: if we're at day 15 of 30 and spent $500 fixed, likely ~$1000 total fixed
-    const dayOfMonth = now.getDate();
-    if (dayOfMonth > 0 && fixedThisMonth > 0) {
-      const estimatedTotalFixed = (fixedThisMonth / dayOfMonth) * daysInMonth;
-      return Math.max(0, estimatedTotalFixed - fixedThisMonth);
-    }
-    return 0;
-  }
-
-  // ===== Impulsive Detection =====
-  function isImpulsiveExpense(tx) {
-    if (tx.type !== 'expense') return false;
-    if (!IMPULSIVE_CATEGORIES.includes(tx.category)) return false;
+// ===== Impulsive Detection =====
+// For displaying impulsive flag on individual transactions (recent transactions list)
+function isImpulsiveExpense(tx) {
+    // Only variable expenses can be flagged as impulsive
+    if (tx.type !== 'expense' || tx.expenseType !== 'variable') return false;
 
     const now = new Date();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
 
     const monthTx = state.transactions.filter(t => {
-      const d = new Date(t.date);
-      return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+        const d = new Date(t.date);
+        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
     const totalIncome = monthTx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
     if (totalIncome <= 0) return false;
 
     const categoryTotal = monthTx
-      .filter(t => t.type === 'expense' && t.category === tx.category)
-      .reduce((s, t) => s + t.amount, 0);
+        .filter(t => t.type === 'expense' && t.category === tx.category)
+        .reduce((s, t) => s + t.amount, 0);
 
     return (categoryTotal / totalIncome) * 100 > state.settings.impulsiveThreshold;
-  }
+}
+
+// For survival score analysis - check if category has ANY impulsive transactions
+function isCategoryImpulsive(category) {
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    const monthTx = state.transactions.filter(t => {
+        const d = new Date(t.date);
+        return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+    });
+
+    const totalIncome = monthTx.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
+    if (totalIncome <= 0) return false;
+
+    // Check if ANY transaction in this category is impulsive
+    const hasImpulsiveTransaction = monthTx.some(t => 
+        t.type === 'expense' && 
+        t.expenseType === 'variable' && 
+        t.category === category &&
+        isImpulsiveExpense(t) // Reuse the per-transaction check
+    );
+
+    return hasImpulsiveTransaction;
+}
 
   function analyzeImpulsiveSpending() {
     const container = $('#impulsive-analysis');
@@ -931,6 +1046,7 @@
 
     $('#save-budget').addEventListener('click', () => {
       state.settings.monthlyIncome = parseFloat($('#monthly-income').value) || 0;
+      state.settings.monthlyFixed = parseFloat($('#monthly-fixed').value) || 0;
       state.settings.monthlyBudget = parseFloat($('#monthly-budget').value) || 0;
       saveToStorage();
       refreshAll();
@@ -942,6 +1058,7 @@
     $('#threshold-setting').value = state.settings.survivalThreshold;
     $('#impulsive-threshold').value = state.settings.impulsiveThreshold;
     $('#monthly-income').value = state.settings.monthlyIncome || '';
+    $('#monthly-fixed').value = state.settings.monthlyFixed || '';
     $('#monthly-budget').value = state.settings.monthlyBudget || '';
   }
 
@@ -988,53 +1105,122 @@
     });
   }
 
-  // ===== Category Filtering by Transaction Type =====
-  function setupCategoryFiltering() {
-    const qaType = $('#qa-type');
-    const qaCategory = $('#qa-category');
+// ===== Category Filtering by Transaction Type =====
+function setupCategoryFiltering() {
+     const qaType = $('#qa-type');
+     const qaExpenseType = $('#qa-expense-type');
+     const qaCategory = $('#qa-category');
 
-    function updateQaCategories() {
-      const type = qaType.value;
-      qaCategory.innerHTML = '';
-      Object.entries(CATEGORIES).forEach(([key, cat]) => {
-        if (cat.type === type || cat.type === 'both') {
-          const opt = document.createElement('option');
-          opt.value = key;
-          opt.textContent = cat.emoji + ' ' + cat.label;
-          qaCategory.appendChild(opt);
-        }
-      });
-    }
+function updateQaCategories() {
+       const type = qaType.value;
+       const expenseType = qaExpenseType ? qaExpenseType.value : 'variable';
+       qaCategory.innerHTML = '';
+       Object.entries(CATEGORIES).forEach(([key, cat]) => {
+         // For income transactions, show income and both types
+         // For expense transactions, show based on expenseSubtype (variable or fixed)
+         if (type === 'income') {
+           if (cat.type === 'income' || cat.type === 'both') {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             qaCategory.appendChild(opt);
+           }
+         } else if (type === 'expense') {
+           if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             qaCategory.appendChild(opt);
+           }
+         } else {
+           // Fallback for other types
+           if (cat.type === type || cat.type === 'both') {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             qaCategory.appendChild(opt);
+           }
+         }
+       });
+     }
 
-    qaType.addEventListener('change', updateQaCategories);
-    updateQaCategories();
+function updateQaCategoriesByExpenseType(txType, expenseType) {
+       qaCategory.innerHTML = '';
+       Object.entries(CATEGORIES).forEach(([key, cat]) => {
+         if (txType === 'income') {
+           if (cat.type === 'income' || cat.type === 'both') {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             qaCategory.appendChild(opt);
+           }
+         } else if (txType === 'expense') {
+           if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             qaCategory.appendChild(opt);
+           }
+         }
+       });
+     }
 
-    // Modal form
-    const txCategory = $('#tx-category');
+     qaType.addEventListener('change', updateQaCategories);
+     if (qaExpenseType) {
+       qaExpenseType.addEventListener('change', updateQaCategories);
+     }
+     updateQaCategories();
 
-    function updateTxCategories() {
-      const type = $('#tx-type').value;
-      txCategory.innerHTML = '';
-      Object.entries(CATEGORIES).forEach(([key, cat]) => {
-        if (cat.type === type || cat.type === 'both') {
-          const opt = document.createElement('option');
-          opt.value = key;
-          opt.textContent = cat.emoji + ' ' + cat.label;
-          txCategory.appendChild(opt);
-        }
-      });
-    }
+// Modal form
+     const txCategory = $('#tx-category');
+     const txExpenseType = $('#tx-expense-type');
 
-    // Listen for toggle changes in modal
-    $$('#transaction-form .toggle-group').forEach(group => {
-      const toggles = group.querySelectorAll('.toggle');
-      toggles.forEach(t => {
-        if (t.dataset.value) {
-          t.addEventListener('click', () => {
-            setTimeout(updateTxCategories, 0);
-          });
-        }
-      });
+function updateTxCategories() {
+       const type = $('#tx-type').value;
+       const expenseType = txExpenseType ? txExpenseType.value : 'variable';
+       txCategory.innerHTML = '';
+       Object.entries(CATEGORIES).forEach(([key, cat]) => {
+         // For income transactions, show income and both types
+         // For expense transactions, show based on expenseSubtype (variable or fixed)
+         if (type === 'income') {
+           if (cat.type === 'income' || cat.type === 'both') {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             txCategory.appendChild(opt);
+           }
+         } else if (type === 'expense') {
+           if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             txCategory.appendChild(opt);
+           }
+         } else {
+           // Fallback for other types
+           if (cat.type === type || cat.type === 'both') {
+             const opt = document.createElement('option');
+             opt.value = key;
+             opt.textContent = cat.emoji + ' ' + cat.label;
+             txCategory.appendChild(opt);
+           }
+         }
+       });
+     }
+
+// Listen for toggle changes in modal
+     $$('#transaction-form .toggle-group').forEach(group => {
+       const toggles = group.querySelectorAll('.toggle');
+       toggles.forEach(t => {
+         t.addEventListener('click', () => {
+           if (t.dataset.value) {
+             setTimeout(updateTxCategories, 0);
+           }
+           if (t.dataset.expense) {
+             setTimeout(updateTxCategories, 0);
+           }
+         });
+       });
     });
 
     updateTxCategories();
@@ -1065,6 +1251,7 @@
           survivalThreshold: 20,
           impulsiveThreshold: 10,
           monthlyIncome: 0,
+          monthlyFixed: 0,
           monthlyBudget: 0,
         };
         saveToStorage();

@@ -1432,6 +1432,34 @@ function updateTxCategories() {
       showToast('Data exported!', 'success');
     });
 
+    $('#import-data').addEventListener('click', () => {
+      $('#import-file').click();
+    });
+
+    $('#import-file').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (data.transactions && Array.isArray(data.transactions)) {
+          state.transactions = data.transactions;
+        }
+        if (data.settings) {
+          state.settings = { ...state.settings, ...data.settings };
+        }
+        state.notifications = [];
+        saveToStorage();
+        applySettingsToUI();
+        refreshAll();
+        showToast('Data imported successfully!', 'success');
+      } catch (err) {
+        console.error('Import failed:', err);
+        showToast('Import failed: Invalid JSON file', 'error');
+      }
+      e.target.value = '';
+    });
+
     $('#clear-data').addEventListener('click', () => {
       if (confirm('This will delete all your transactions and reset settings. Continue?')) {
         state.transactions = [];

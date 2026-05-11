@@ -1,5 +1,8 @@
-// ===== SurvivalFi — Main Application (Refactored v2) =====
-// Clean, non-overlapping logic. No extreme cases.
+// ===== SurvivalFi — Main Application (Supabase Edition v3) =====
+// Dual mode: localStorage (offline) | Supabase (signed in)
+// Merge strategy: local data + Supabase data = combined (no overwrite)
+
+import { supabaseClient } from './supabase.js';
 
 (function () {
   'use strict';
@@ -7,7 +10,6 @@
   // ===== State =====
   const state = {
     user: null,
-    supabase: null,
     transactions: [],
     notifications: [],
     settings: {
@@ -16,11 +18,14 @@
       monthlyIncome: 0,
       monthlyFixed: 0,
       monthlyBudget: 0,
+      theme: 'dark',
     },
     isRegistering: false,
+    isLocalMode: false,
+    supabaseCategories: [],
   };
 
-  // ===== Category Config =====
+  // ===== Category Config (local fallback) =====
   const CATEGORIES = {
     food:            { emoji: '🍜', label: 'Food',             color: '#f59e0b', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
     transportation:  { emoji: '🚗', label: 'Transportation',   color: '#3b82f6', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
@@ -36,7 +41,6 @@
     other:           { emoji: '📦', label: 'Other',            color: '#94a3b8', type: 'both',    expenseSubtype: ['variable', 'fixed'] },
   };
 
-  // Categories considered "impulsive" (discretionary spending)
   const IMPULSIVE_CATEGORIES = ['entertainment', 'shopping'];
 
   // ===== DOM Helpers =====
@@ -46,6 +50,8 @@
   // ===== Initialization =====
   async function init() {
     await loadFromStorage();
+    await checkAuthSession();
+    await loadCategoriesFromSupabase();
     setupAuth();
     setupNavigation();
     setupMobileMenu();
@@ -59,9 +65,56 @@
     setupThemeToggle();
     setupCategoryFiltering();
 
-    if (state.user) {
+    if (state.user || state.isLocalMode) {
       showApp();
     }
+  }
+
+  // ===== Auth Session Check =====
+  async function checkAuthSession() {
+    try {
+      const { data: { session }, error } = await supabaseClient.auth.getSession();
+      if (error) throw error;
+      if (session?.user) {
+        state.user = {
+          id: session.user.id,
+          email: session.user.email,
+        };
+        state.isLocalMode = false;
+        await syncFromSupabase();
+      }
+    } catch (err) {
+      console.warn('Session check failed:', err);
+    }
+  }
+
+  // ===== Categories from Supabase =====
+  async function loadCategoriesFromSupabase() {
+    try {
+      const { data, error } = await supabaseClient
+        .from('categories')
+        .select('*');
+      if (error) throw error;
+      if (data && data.length > 0) {
+        state.supabaseCategories = data;
+      }
+    } catch (err) {
+      console.warn('Failed to load categories from Supabase, using local fallback:', err);
+    }
+  }
+
+  function getCategoryConfig(key) {
+    const supa = state.supabaseCategories.find(c => c.key === key);
+    if (supa) {
+      return {
+        emoji: supa.emoji,
+        label: supa.label,
+        color: supa.color,
+        type: supa.type,
+        expenseSubtype: supa.expense_subtype ? JSON.parse(supa.expense_subtype) : null,
+      };
+    }
+    return CATEGORIES[key] || CATEGORIES.other;
   }
 
   // ===== Storage =====
@@ -74,22 +127,10 @@
         state.transactions = data.transactions || [];
         state.notifications = data.notifications || [];
         state.settings = { ...state.settings, ...data.settings };
+        state.isLocalMode = data.isLocalMode || false;
       }
     } catch (e) {
       console.warn('Failed to load storage', e);
-    }
-
-    // If Supabase connected, load fresh data
-    if (state.supabase && state.user?.id) {
-      try {
-        await Promise.all([
-          loadTransactionsFromSupabase(),
-          loadNotificationsFromSupabase(),
-          loadSettingsFromSupabase()
-        ]);
-      } catch (err) {
-        console.warn('Failed to load from Supabase:', err);
-      }
     }
   }
 
@@ -100,18 +141,87 @@
         transactions: state.transactions,
         notifications: state.notifications,
         settings: state.settings,
+        isLocalMode: state.isLocalMode,
       }));
-      if (state.supabase && state.user?.id) {
-        syncSettingsToSupabase().catch(() => {});
-      }
     } catch (e) {
       console.warn('Failed to save storage', e);
+    }
+  }
+
+  // ===== Supabase Sync (Merge, don't overwrite) =====
+  async function syncFromSupabase() {
+    if (!state.user?.id) return;
+    try {
+      const [txRes, notifRes, settingsRes] = await Promise.all([
+        supabaseClient.from('transactions').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }),
+        supabaseClient.from('notifications').select('*').eq('user_id', state.user.id).order('timestamp', { ascending: false }),
+        supabaseClient.from('settings').select('*').eq('user_id', state.user.id).single(),
+      ]);
+
+      if (txRes.data) {
+        const supaTx = txRes.data.map(t => ({
+          id: t.id,
+          type: t.type,
+          amount: parseFloat(t.amount),
+          category: t.category_key,
+          expenseType: t.expense_type,
+          description: t.description,
+          date: t.date,
+          createdAt: t.created_at,
+        }));
+        const localIds = new Set(state.transactions.map(t => t.id));
+        const newFromSupa = supaTx.filter(t => !localIds.has(t.id));
+        state.transactions = [...state.transactions, ...newFromSupa];
+        state.transactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
+      }
+
+      if (notifRes.data) {
+        const supaNotif = notifRes.data.map(n => ({
+          id: n.id,
+          type: n.type,
+          text: n.text,
+          timestamp: n.timestamp,
+        }));
+        const localIds = new Set(state.notifications.map(n => n.id));
+        const newFromSupa = supaNotif.filter(n => !localIds.has(n.id));
+        state.notifications = [...state.notifications, ...newFromSupa];
+        state.notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      }
+
+      if (settingsRes.data) {
+        state.settings = {
+          survivalThreshold: settingsRes.data.survival_threshold ?? state.settings.survivalThreshold,
+          impulsiveThreshold: settingsRes.data.impulsive_threshold ?? state.settings.impulsiveThreshold,
+          monthlyIncome: parseFloat(settingsRes.data.monthly_income) || state.settings.monthlyIncome,
+          monthlyFixed: parseFloat(settingsRes.data.monthly_fixed) || state.settings.monthlyFixed,
+          monthlyBudget: parseFloat(settingsRes.data.monthly_budget) || state.settings.monthlyBudget,
+          theme: settingsRes.data.theme || state.settings.theme,
+        };
+      }
+
+      saveToStorage();
+    } catch (err) {
+      console.warn('Failed to sync from Supabase:', err);
+    }
+  }
+
+  // ===== Upload local data to Supabase (on first sign-in) =====
+  async function uploadLocalDataToSupabase() {
+    if (!state.user?.id) return;
+    try {
+      for (const tx of state.transactions) {
+        await syncTransactionToSupabase(tx);
+      }
+      await syncSettingsToSupabase();
+    } catch (err) {
+      console.warn('Failed to upload local data:', err);
     }
   }
 
   // ===== Toast =====
   function showToast(message, type = 'info') {
     const container = $('#toast-container');
+    if (!container) return;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.innerHTML = `<span>${message}</span>`;
@@ -124,144 +234,159 @@
     const form = $('#auth-form');
     const toggle = $('#auth-toggle');
     const title = $('#auth-title');
+    const submitBtn = $('#auth-submit');
+    const forgotLink = $('#auth-forgot-link');
 
     toggle.addEventListener('click', () => {
       state.isRegistering = !state.isRegistering;
       title.textContent = state.isRegistering ? 'Create Account' : 'Sign In';
-      $('#auth-submit').textContent = state.isRegistering ? 'Create Account' : 'Sign In';
+      submitBtn.textContent = state.isRegistering ? 'Create Account' : 'Sign In';
       toggle.textContent = state.isRegistering ? 'Already have an account? Sign In' : 'Create Account';
+      forgotLink.style.display = state.isRegistering ? 'none' : 'inline';
     });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const email = $('#auth-email').value.trim();
       const password = $('#auth-password').value;
-      const url = $('#supabase-url').value.trim();
-      const key = $('#supabase-key').value.trim();
 
-      if (url && key) {
-        try {
-          if (!state.supabase) {
-            state.supabase = window.supabase.createClient(url, key);
-          }
-          let result;
-          if (state.isRegistering) {
-            result = await state.supabase.auth.signUp({ email, password });
-            if (result.error) throw result.error;
-            state.user = { email: result.data.user.email, id: result.data.user.id };
-            await loadTransactionsFromSupabase();
-            saveToStorage();
-            showApp();
-            showToast('Account created! Check your email for verification.', 'success');
-          } else {
-            result = await state.supabase.auth.signInWithPassword({ email, password });
-            if (result.error) throw result.error;
-            state.user = { email: result.data.user.email, id: result.data.user.id };
-            await loadTransactionsFromSupabase();
-            await loadNotificationsFromSupabase();
-            await loadSettingsFromSupabase();
-            saveToStorage();
-            showApp();
-            showToast('Signed in successfully!', 'success');
-          }
-        } catch (err) {
-          showToast(err.message || 'Authentication failed', 'error');
+      if (!email || !password) {
+        showToast('Please enter email and password', 'error');
+        return;
+      }
+
+      try {
+        let result;
+        if (state.isRegistering) {
+          result = await supabaseClient.auth.signUp({ email, password });
+          if (result.error) throw result.error;
+          state.user = { id: result.data.user.id, email: result.data.user.email };
+          state.isLocalMode = false;
+          await uploadLocalDataToSupabase();
+          await syncFromSupabase();
+          saveToStorage();
+          showApp();
+          showToast('Account created! Check your email for verification.', 'success');
+        } else {
+          result = await supabaseClient.auth.signInWithPassword({ email, password });
+          if (result.error) throw result.error;
+          state.user = { id: result.data.user.id, email: result.data.user.email };
+          state.isLocalMode = false;
+          await uploadLocalDataToSupabase();
+          await syncFromSupabase();
+          saveToStorage();
+          showApp();
+          showToast('Signed in successfully!', 'success');
         }
-      } else {
-        // Offline mode
-        if (!email || !password) {
-          showToast('Please enter email and password', 'error');
-          return;
-        }
-        state.user = { email, id: 'local_' + btoa(email).slice(0, 12) };
+      } catch (err) {
+        showToast(err.message || 'Authentication failed', 'error');
+      }
+    });
+
+    forgotLink.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const email = $('#auth-email').value.trim();
+      if (!email) {
+        showToast('Please enter your email first', 'error');
+        return;
+      }
+      try {
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        });
+        if (error) throw error;
+        showToast('Password reset email sent! Check your inbox.', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to send reset email', 'error');
+      }
+    });
+
+    $('#oauth-google').addEventListener('click', async () => {
+      try {
+        const { error } = await supabaseClient.auth.signInWithOAuth({
+          provider: 'google',
+          options: { redirectTo: window.location.origin },
+        });
+        if (error) throw error;
+      } catch (err) {
+        showToast(err.message || 'Google sign-in failed', 'error');
+      }
+    });
+
+    $('#oauth-github').addEventListener('click', async () => {
+      try {
+        const { error } = await supabaseClient.auth.signInWithOAuth({
+          provider: 'github',
+          options: { redirectTo: window.location.origin },
+        });
+        if (error) throw error;
+      } catch (err) {
+        showToast(err.message || 'GitHub sign-in failed', 'error');
+      }
+    });
+
+    $('#auth-local-mode').addEventListener('click', () => {
+      state.isLocalMode = true;
+      state.user = null;
+      saveToStorage();
+      showApp();
+      showToast('Using local mode — data stays on this device', 'info');
+    });
+
+    supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        state.user = { id: session.user.id, email: session.user.email };
+        state.isLocalMode = false;
+        await uploadLocalDataToSupabase();
+        await syncFromSupabase();
         saveToStorage();
         showApp();
-        showToast(state.isRegistering ? 'Account created (local mode)!' : 'Signed in (local mode)!', 'success');
+        showToast('Signed in successfully!', 'success');
+      }
+      if (event === 'SIGNED_OUT') {
+        state.user = null;
+        state.isLocalMode = false;
+        saveToStorage();
+        $('#app-screen').classList.remove('active');
+        $('#auth-screen').classList.add('active');
+        showToast('Signed out', 'info');
       }
     });
   }
 
-  // ===== Supabase Database Operations (SINGLE declarations only) =====
-  async function loadTransactionsFromSupabase() {
-    if (!state.supabase || !state.user?.id) return;
-    try {
-      const { data, error } = await state.supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', state.user.id)
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      if (data) {
-        state.transactions = data.map(t => ({
-          id: t.id,
-          type: t.type,
-          amount: t.amount,
-          category: t.category_key || t.category,
-          expenseType: t.expense_type,
-          description: t.description,
-          date: t.date,
-          createdAt: t.created_at,
-        }));
-      }
-    } catch (err) {
-      console.warn('Failed to load from Supabase:', err);
-    }
-  }
-
+  // ===== Supabase Database Operations =====
   async function syncTransactionToSupabase(tx) {
-    if (!state.supabase || !state.user?.id) return;
+    if (!state.user?.id || state.isLocalMode) return;
     try {
-      await state.supabase.from('transactions').upsert({
+      await supabaseClient.from('transactions').upsert({
         id: tx.id,
         user_id: state.user.id,
         type: tx.type,
         amount: tx.amount,
-        category: tx.category,
+        category_key: tx.category,
         expense_type: tx.expenseType,
         description: tx.description,
         date: tx.date,
         created_at: tx.createdAt,
       });
     } catch (err) {
-      console.warn('Sync failed:', err);
+      console.warn('Sync transaction failed:', err);
     }
   }
 
   async function deleteTransactionFromSupabase(txId) {
-    if (!state.supabase || !state.user?.id) return;
+    if (!state.user?.id || state.isLocalMode) return;
     try {
-      await state.supabase.from('transactions').delete().eq('id', txId);
+      await supabaseClient.from('transactions').delete().eq('id', txId);
     } catch (err) {
       console.warn('Delete sync failed:', err);
     }
   }
 
-  async function loadNotificationsFromSupabase() {
-    if (!state.supabase || !state.user?.id) return;
-    try {
-      const { data, error } = await state.supabase
-        .from('notifications')
-        .select('*')
-        .eq('user_id', state.user.id)
-        .order('timestamp', { ascending: false });
-      if (error) throw error;
-      if (data) {
-        state.notifications = data.map(n => ({
-          id: n.id,
-          type: n.type,
-          text: n.text,
-          timestamp: n.timestamp,
-        }));
-      }
-    } catch (err) {
-      console.warn('Failed to load notifications:', err);
-    }
-  }
-
   async function syncNotificationToSupabase(notif) {
-    if (!state.supabase || !state.user?.id) return;
+    if (!state.user?.id || state.isLocalMode) return;
     try {
-      await state.supabase.from('notifications').upsert({
+      await supabaseClient.from('notifications').upsert({
         id: notif.id,
         user_id: state.user.id,
         type: notif.type,
@@ -269,38 +394,14 @@
         timestamp: notif.timestamp,
       });
     } catch (err) {
-      console.warn('Failed to sync notification:', err);
-    }
-  }
-
-  async function loadSettingsFromSupabase() {
-    if (!state.supabase || !state.user?.id) return;
-    try {
-      const { data, error } = await state.supabase
-        .from('settings')
-        .select('*')
-        .eq('user_id', state.user.id)
-        .single();
-      if (error && error.code !== 'PGRST116') throw error;
-      if (data) {
-        state.settings = {
-          survivalThreshold: data.survival_threshold ?? 20,
-          impulsiveThreshold: data.impulsive_threshold ?? 10,
-          monthlyIncome: data.monthly_income ?? 0,
-          monthlyFixed: data.monthly_fixed ?? 0,
-          monthlyBudget: data.monthly_budget ?? 0,
-          theme: data.theme ?? 'dark',
-        };
-      }
-    } catch (err) {
-      console.warn('Failed to load settings:', err);
+      console.warn('Sync notification failed:', err);
     }
   }
 
   async function syncSettingsToSupabase() {
-    if (!state.supabase || !state.user?.id) return;
+    if (!state.user?.id || state.isLocalMode) return;
     try {
-      await state.supabase.from('settings').upsert({
+      await supabaseClient.from('settings').upsert({
         user_id: state.user.id,
         monthly_income: state.settings.monthlyIncome,
         monthly_fixed: state.settings.monthlyFixed,
@@ -310,7 +411,7 @@
         theme: state.settings.theme,
       });
     } catch (err) {
-      console.warn('Failed to sync settings:', err);
+      console.warn('Sync settings failed:', err);
     }
   }
 
@@ -318,8 +419,8 @@
   function showApp() {
     $('#auth-screen').classList.remove('active');
     $('#app-screen').classList.add('active');
-    $('#user-email').textContent = state.user?.email || 'user';
-    $('#user-avatar').textContent = (state.user?.email || 'U')[0].toUpperCase();
+    $('#user-email').textContent = state.user?.email || 'Local User';
+    $('#user-avatar').textContent = (state.user?.email || 'L')[0].toUpperCase();
     applySettingsToUI();
     refreshAll();
   }
@@ -350,9 +451,12 @@
       }
     });
 
-    $('#logout-btn').addEventListener('click', () => {
-      if (state.supabase) state.supabase.auth.signOut().catch(() => {});
+    $('#logout-btn').addEventListener('click', async () => {
+      if (state.user) {
+        await supabaseClient.auth.signOut().catch(() => {});
+      }
       state.user = null;
+      state.isLocalMode = false;
       saveToStorage();
       $('#app-screen').classList.remove('active');
       $('#auth-screen').classList.add('active');
@@ -416,7 +520,7 @@
         amount,
         category: $('#qa-category').value,
         expenseType: typeSelect.value === 'income' ? 'none' : $('#qa-expense-type').value,
-        description: $('#qa-desc').value || CATEGORIES[$('#qa-category').value]?.label || 'Transaction',
+        description: $('#qa-desc').value || getCategoryConfig($('#qa-category').value)?.label || 'Transaction',
       });
 
       addTransaction(tx);
@@ -468,7 +572,7 @@
         amount,
         category: $('#tx-category').value,
         expenseType: $('#tx-type').value === 'income' ? 'none' : $('#tx-expense-type').value,
-        description: $('#tx-desc').value || CATEGORIES[$('#tx-category').value]?.label || 'Transaction',
+        description: $('#tx-desc').value || getCategoryConfig($('#tx-category').value)?.label || 'Transaction',
         date: $('#tx-date').value,
       });
 
@@ -484,7 +588,7 @@
   // ===== Transaction CRUD =====
   function createTransaction({ type, amount, category, expenseType, description, date }) {
     return {
-      id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      id: crypto.randomUUID ? crypto.randomUUID() : 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       type,
       amount,
       category,
@@ -523,8 +627,7 @@
 
   // ===== Stats =====
   function updateStats() {
-    const { monthTx, income, expenses, balance } = getMonthData();
-
+    const { income, expenses, balance } = getMonthData();
     $('#stat-income').textContent = formatCurrency(income);
     $('#stat-expenses').textContent = formatCurrency(expenses);
     $('#stat-balance').textContent = formatCurrency(balance);
@@ -581,7 +684,7 @@
   }
 
   function renderTransactionItem(tx, showDate = false) {
-    const cat = CATEGORIES[tx.category] || CATEGORIES.other;
+    const cat = getCategoryConfig(tx.category);
     const isImpulsive = tx.type === 'expense' && isImpulsiveTransaction(tx);
     const badges = [];
     if (tx.type === 'expense') {
@@ -647,7 +750,7 @@
     const legendItems = [];
 
     sorted.forEach(([cat, amount]) => {
-      const info = CATEGORIES[cat] || CATEGORIES.other;
+      const info = getCategoryConfig(cat);
       const pct = amount / total;
       const dashLen = pct * circumference;
       segments.push(
@@ -678,7 +781,7 @@
   }
 
   // ============================================================
-  // ===== SURVIVAL SCORE — CLEAN, NON-OVERLAPPING LOGIC =====
+  // ===== SURVIVAL SCORE =====
   // ============================================================
 
   function calculateSurvivalScore() {
@@ -689,11 +792,9 @@
 
     const { monthTx, income, expenses, balance, fixedExpenses, variableExpenses } = getMonthData();
 
-    const monthlyIncome = state.settings.monthlyIncome || income || 1; // avoid div by zero
+    const monthlyIncome = state.settings.monthlyIncome || income || 1;
     const monthlyFixed = state.settings.monthlyFixed || 0;
 
-    // --- FACTOR 1: RUNWAY SCORE (40% weight) ---
-    // "How many months can you survive with current balance?"
     const projectedVariable = state.settings.monthlyBudget > 0
       ? Math.min(variableExpenses, state.settings.monthlyBudget)
       : variableExpenses;
@@ -701,19 +802,10 @@
     const runwayMonths = balance / Math.max(totalMonthlyOutflow, 1);
     const runwayScore = calculateRunwayScore(runwayMonths);
 
-    // --- FACTOR 2: RATIO SCORE (30% weight) ---
-    // "Income vs Expenses health"
     const ratioScore = calculateRatioScore(income, expenses);
-
-    // --- FACTOR 3: STABILITY SCORE (20% weight) ---
-    // "Income consistency" (based on last 3 months)
     const stabilityScore = calculateStabilityScore();
-
-    // --- FACTOR 4: BUFFER SCORE (10% weight) ---
-    // "Emergency fund status" (balance vs 3-month fixed expenses)
     const bufferScore = calculateBufferScore(balance, monthlyFixed);
 
-    // --- FINAL SCORE ---
     let score = Math.round(
       runwayScore * 0.40 +
       ratioScore * 0.30 +
@@ -721,27 +813,16 @@
       bufferScore * 0.10
     );
 
-    // Clamp 0-100
     score = Math.max(0, Math.min(100, score));
 
-    // --- UPDATE UI ---
     updateSurvivalUI(score, runwayScore, ratioScore, stabilityScore, bufferScore, {
-      daysRemaining,
-      daysInMonth,
-      dayOfMonth,
-      balance,
-      monthlyFixed,
-      monthlyIncome,
-      fixedExpenses,
-      variableExpenses,
-      income,
-      expenses
+      daysRemaining, daysInMonth, dayOfMonth, balance, monthlyFixed, monthlyIncome,
+      fixedExpenses, variableExpenses, income, expenses, monthTx
     });
 
     return score;
   }
 
-  // --- Runway Score: Non-linear mapping ---
   function calculateRunwayScore(runwayMonths) {
     if (runwayMonths >= 6) return 100;
     if (runwayMonths >= 3) return 70 + ((runwayMonths - 3) / 3) * 30;
@@ -749,7 +830,6 @@
     return Math.max(0, runwayMonths * 30);
   }
 
-  // --- Ratio Score: Income vs Expenses ---
   function calculateRatioScore(income, expenses) {
     if (income <= 0) return expenses > 0 ? 0 : 50;
     const ratio = income / Math.max(expenses, 1);
@@ -758,10 +838,9 @@
     return Math.max(0, ratio * 50);
   }
 
-  //actual vs expected income
   function calculateStabilityScore() {
     const expectedIncome = state.settings.monthlyIncome;
-    if (expectedIncome <= 0) return 50; // neutral if no budget set
+    if (expectedIncome <= 0) return 50;
 
     const now = new Date();
     const monthlyIncomes = [];
@@ -790,25 +869,21 @@
     return 100 - ((cv - 0.2) / 0.8) * 100;
   }
 
-  // --- Buffer Score: Emergency fund progress ---
   function calculateBufferScore(currentBalance, monthlyFixed) {
     const target = monthlyFixed * 3;
     if (target <= 0) return currentBalance > 0 ? 100 : 50;
     return Math.min(100, (currentBalance / target) * 100);
   }
 
-  // --- Update Survival Score UI ---
   function updateSurvivalUI(score, runwayScore, ratioScore, stabilityScore, bufferScore, data) {
     const {
       daysRemaining, daysInMonth, dayOfMonth, balance,
-      monthlyFixed, monthlyIncome, fixedExpenses, variableExpenses, income, expenses
+      monthlyFixed, monthlyIncome, fixedExpenses, variableExpenses, income, expenses, monthTx
     } = data;
 
-    // Main score display
     $('#stat-survival').textContent = score + '%';
     $('#stat-survival').className = 'stat-value ' + (score <= 20 ? 'danger' : score <= 50 ? 'warning' : 'safe');
 
-    // Ring animation
     const circle = $('#survival-circle');
     const circumference = 534;
     const offset = circumference - (score / 100) * circumference;
@@ -816,7 +891,6 @@
     circle.style.stroke = getSurvivalColor(score);
     $('#survival-number').textContent = score + '%';
 
-    // Status text
     let status, statusColor;
     if (score >= 70) { status = 'Financially Healthy'; statusColor = 'var(--green)'; }
     else if (score >= 50) { status = 'Moderate — Stay Cautious'; statusColor = 'var(--text-primary)'; }
@@ -827,12 +901,10 @@
     statusEl.textContent = status;
     statusEl.style.color = statusColor;
 
-    // Factor: Days Remaining
     $('#factor-days').textContent = daysRemaining + ' days';
     $('#factor-days-bar').style.width = ((daysRemaining / daysInMonth) * 100) + '%';
     $('#factor-days-bar').style.background = 'var(--accent)';
 
-    // Factor: Daily Budget
     const avgDailySpend = dayOfMonth > 0 ? expenses / dayOfMonth : 0;
     const dailyBudget = daysRemaining > 0 && balance > 0 ? balance / daysRemaining : 0;
     $('#factor-daily').textContent = formatCurrency(dailyBudget) + '/day';
@@ -840,7 +912,6 @@
     $('#factor-daily-bar').style.width = dailyPct + '%';
     $('#factor-daily-bar').style.background = dailyPct > 60 ? 'var(--green)' : dailyPct > 30 ? 'var(--orange)' : 'var(--red)';
 
-    // Factor: Fixed Expenses Coverage
     let fixedLabel, fixedPct, fixedColor;
     if (monthlyFixed > 0) {
       const remainingFixed = Math.max(0, monthlyFixed - fixedExpenses);
@@ -865,12 +936,10 @@
     $('#factor-fixed-bar').style.width = fixedPct + '%';
     $('#factor-fixed-bar').style.background = fixedColor;
 
-    // Factor: Impulsive Spending Risk
     const impulsiveTotal = monthTx => monthTx
       .filter(t => t.type === 'expense' && IMPULSIVE_CATEGORIES.includes(t.category))
       .reduce((s, t) => s + t.amount, 0);
-    const { monthTx: currentMonthTx } = getMonthData();
-    const impulsiveAmount = impulsiveTotal(currentMonthTx);
+    const impulsiveAmount = impulsiveTotal(monthTx);
     const impulsiveRatio = monthlyIncome > 0 ? (impulsiveAmount / monthlyIncome) * 100 : 0;
 
     $('#factor-impulsive').textContent = impulsiveRatio.toFixed(1) + '% of income';
@@ -880,10 +949,7 @@
       ? 'var(--green)' : impulsiveRatio <= state.settings.impulsiveThreshold * 2 ? 'var(--orange)' : 'var(--red)';
   }
 
-  // ===== Impulsive Detection (Single, Clear Logic) =====
-  // A transaction is impulsive if:
-  // 1. It's a variable expense in an impulsive category (entertainment/shopping)
-  // 2. AND the total spent in that category this month exceeds the threshold % of income
+  // ===== Impulsive Detection =====
   function isImpulsiveTransaction(tx) {
     if (tx.type !== 'expense' || tx.expenseType !== 'variable') return false;
     if (!IMPULSIVE_CATEGORIES.includes(tx.category)) return false;
@@ -891,7 +957,6 @@
     const { income } = getMonthData();
     if (income <= 0) return false;
 
-    // Check if total spending in this category exceeds threshold
     const { monthTx } = getMonthData();
     const catTotal = monthTx
       .filter(t => t.type === 'expense' && t.category === tx.category)
@@ -911,13 +976,12 @@
 
     const analyses = [];
 
-    // Analyze impulsive categories
     IMPULSIVE_CATEGORIES.forEach(cat => {
       const catTotal = monthTx
         .filter(t => t.type === 'expense' && t.category === cat)
         .reduce((s, t) => s + t.amount, 0);
       const pct = (catTotal / income) * 100;
-      const info = CATEGORIES[cat];
+      const info = getCategoryConfig(cat);
 
       let level, levelClass, pctClass;
       if (pct <= state.settings.impulsiveThreshold * 0.5) {
@@ -931,7 +995,6 @@
       analyses.push({ cat, info, total: catTotal, pct, level, levelClass, pctClass });
     });
 
-    // Check other categories for unusually high spending (>30% of income)
     const otherCats = [...new Set(monthTx
       .filter(t => t.type === 'expense' && !IMPULSIVE_CATEGORIES.includes(t.category))
       .map(t => t.category))];
@@ -942,7 +1005,7 @@
         .reduce((s, t) => s + t.amount, 0);
       const pct = (catTotal / income) * 100;
       if (pct > 30) {
-        const info = CATEGORIES[cat] || CATEGORIES.other;
+        const info = getCategoryConfig(cat);
         analyses.push({ cat, info, total: catTotal, pct, level: 'High Spend', levelClass: 'warning', pctClass: 'warn' });
       }
     });
@@ -992,13 +1055,11 @@
     const now = new Date();
     const { monthTx, income, expenses, balance } = getMonthData();
 
-    // Clear old month notifications
     state.notifications = state.notifications.filter(n => {
       const d = new Date(n.timestamp);
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     });
 
-    // 1. Survival score below threshold
     if (score <= threshold) {
       addNotification({
         type: 'danger',
@@ -1007,7 +1068,6 @@
       });
     }
 
-    // 2. Impulsive spending alerts (category-level)
     if (income > 0) {
       IMPULSIVE_CATEGORIES.forEach(cat => {
         const catTotal = monthTx
@@ -1016,7 +1076,7 @@
         const pct = (catTotal / income) * 100;
 
         if (pct > state.settings.impulsiveThreshold) {
-          const info = CATEGORIES[cat];
+          const info = getCategoryConfig(cat);
           addNotification({
             type: 'warning',
             text: `${info.emoji} ${info.label} spending is at ${pct.toFixed(1)}% of income — exceeding your ${state.settings.impulsiveThreshold}% threshold.`,
@@ -1026,7 +1086,6 @@
       });
     }
 
-    // 3. Negative balance
     if (balance < 0) {
       addNotification({
         type: 'danger',
@@ -1035,7 +1094,6 @@
       });
     }
 
-    // 4. Fixed expenses not covered (if set)
     const monthlyFixed = state.settings.monthlyFixed || 0;
     const fixedPaid = monthTx.filter(t => t.type === 'expense' && t.expenseType === 'fixed').reduce((s, t) => s + t.amount, 0);
     if (monthlyFixed > 0 && fixedPaid < monthlyFixed && balance < (monthlyFixed - fixedPaid)) {
@@ -1052,13 +1110,12 @@
   }
 
   function addNotification(notif) {
-    // Avoid exact duplicates in last 24h
     const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
     const exists = state.notifications.some(n =>
       n.text === notif.text && n.timestamp > oneDayAgo
     );
     if (!exists) {
-      const newNotif = { ...notif, id: 'n_' + Date.now() };
+      const newNotif = { ...notif, id: crypto.randomUUID ? crypto.randomUUID() : 'n_' + Date.now() };
       state.notifications.unshift(newNotif);
       syncNotificationToSupabase(newNotif).catch(() => {});
     }
@@ -1099,6 +1156,7 @@
       state.settings.survivalThreshold = parseInt($('#threshold-setting').value) || 20;
       state.settings.impulsiveThreshold = parseInt($('#impulsive-threshold').value) || 10;
       saveToStorage();
+      syncSettingsToSupabase();
       refreshAll();
       showToast('Settings saved!', 'success');
     });
@@ -1108,6 +1166,7 @@
       state.settings.monthlyFixed = parseFloat($('#monthly-fixed').value) || 0;
       state.settings.monthlyBudget = parseFloat($('#monthly-budget').value) || 0;
       saveToStorage();
+      syncSettingsToSupabase();
       refreshAll();
       showToast('Budget saved!', 'success');
     });
@@ -1160,6 +1219,7 @@
       lightIcon.style.display = isLight ? 'block' : 'none';
       state.settings.theme = isLight ? 'light' : 'dark';
       saveToStorage();
+      syncSettingsToSupabase();
     });
   }
 
@@ -1169,21 +1229,35 @@
     updateTxCategories();
   }
 
-    function updateQaCategories() {
+  function updateQaCategories() {
     const type = $('#qa-type').value;
     const expenseType = $('#qa-expense-type').value;
     const select = $('#qa-category');
     select.innerHTML = '';
 
-    Object.entries(CATEGORIES).forEach(([key, cat]) => {
-      if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
-        select.add(new Option(cat.emoji + ' ' + cat.label, key));
-      } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
-        if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
-          select.add(new Option(cat.emoji + ' ' + cat.label, key));
+    if (state.supabaseCategories.length > 0) {
+      state.supabaseCategories.forEach(cat => {
+        const catType = cat.type;
+        const subtypes = cat.expense_subtype ? JSON.parse(cat.expense_subtype) : [];
+        if (type === 'income' && (catType === 'income' || catType === 'both')) {
+          select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
+        } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
+          if (subtypes.includes(expenseType)) {
+            select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
+          }
         }
-      }
-    });
+      });
+    } else {
+      Object.entries(CATEGORIES).forEach(([key, cat]) => {
+        if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
+          select.add(new Option(cat.emoji + ' ' + cat.label, key));
+        } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
+          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
+            select.add(new Option(cat.emoji + ' ' + cat.label, key));
+          }
+        }
+      });
+    }
   }
 
   function updateTxCategories() {
@@ -1192,15 +1266,29 @@
     const select = $('#tx-category');
     select.innerHTML = '';
 
-    Object.entries(CATEGORIES).forEach(([key, cat]) => {
-      if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
-        select.add(new Option(cat.emoji + ' ' + cat.label, key));
-      } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
-        if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
-          select.add(new Option(cat.emoji + ' ' + cat.label, key));
+    if (state.supabaseCategories.length > 0) {
+      state.supabaseCategories.forEach(cat => {
+        const catType = cat.type;
+        const subtypes = cat.expense_subtype ? JSON.parse(cat.expense_subtype) : [];
+        if (type === 'income' && (catType === 'income' || catType === 'both')) {
+          select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
+        } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
+          if (subtypes.includes(expenseType)) {
+            select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
+          }
         }
-      }
-    });
+      });
+    } else {
+      Object.entries(CATEGORIES).forEach(([key, cat]) => {
+        if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
+          select.add(new Option(cat.emoji + ' ' + cat.label, key));
+        } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
+          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
+            select.add(new Option(cat.emoji + ' ' + cat.label, key));
+          }
+        }
+      });
+    }
   }
 
   // ===== Export / Clear =====
@@ -1238,6 +1326,11 @@
         }
         state.notifications = [];
         saveToStorage();
+
+        if (state.user && !state.isLocalMode) {
+          await uploadLocalDataToSupabase();
+        }
+
         applySettingsToUI();
         refreshAll();
         showToast('Data imported successfully!', 'success');
@@ -1257,13 +1350,30 @@
           monthlyIncome: 0,
           monthlyFixed: 0,
           monthlyBudget: 0,
+          theme: state.settings.theme,
         };
         saveToStorage();
+
+        if (state.user && !state.isLocalMode) {
+          clearSupabaseData().catch(() => {});
+        }
+
         applySettingsToUI();
         refreshAll();
         showToast('All data cleared', 'info');
       }
     });
+  }
+
+  async function clearSupabaseData() {
+    if (!state.user?.id || state.isLocalMode) return;
+    try {
+      await supabaseClient.from('transactions').delete().eq('user_id', state.user.id);
+      await supabaseClient.from('notifications').delete().eq('user_id', state.user.id);
+      await supabaseClient.from('settings').delete().eq('user_id', state.user.id);
+    } catch (err) {
+      console.warn('Failed to clear Supabase data:', err);
+    }
   }
 
   // ===== Utilities =====

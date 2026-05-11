@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="css/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Supabase JS loaded as module via app.js -->
 </head>
 <body>
   <!-- Toast Notification Container -->
@@ -63,7 +63,9 @@
   <!-- Modal (component) -->
   <div id="slot-modal"></div>
 
-  <!-- Component Loader (loads components, then boots main app) -->
-  <script src="js/app.js"></script>
+  <!-- Supabase CDN (global supabase object for createClient) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Component Loader (ES Module) -->
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

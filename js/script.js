@@ -1,7 +1,7 @@
-// ===== SurvivalFi - Main Application (Supabase Edition v5) =====
-// Dual mode: localStorage (offline) | Supabase (signed in)
-// Fixes: PKCE code verifier stored in localStorage (not cookies), manual token exchange,
-// expense_subtype type handling, Edge tracking prevention compatibility
+// ===== SurvivalFi - Main Application (Supabase Edition v7) =====
+// FIXED: Uses transaction_id (not id) for transactions table
+// FIXED: Uses notification_id for notifications table
+// FIXED: Schema discovery removed (information_schema 404s on this Supabase instance)
 
 import { supabaseClient } from './supabase.js';
 
@@ -19,7 +19,7 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Check Supabase Availability =====
   if (typeof supabase === 'undefined') {
-    console.error('Supabase library not loaded! Check that https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2 is accessible.');
+    console.error('Supabase library not loaded!');
     document.body.innerHTML = '<div style="padding:2rem;text-align:center;"><h2>Loading Error</h2><p>The Supabase library failed to load. This may be due to tracking prevention blocking the CDN.</p><p>Try disabling tracking prevention for this site or use a different browser.</p></div>';
     return;
   }
@@ -42,11 +42,34 @@ import { supabaseClient } from './supabase.js';
     supabaseCategories: [],
   };
 
+  // ===== OAuth Processing Guard =====
+  let isProcessingOAuth = false;
+
   // ===== Constants =====
   const SUPABASE_URL = 'https://fgaukbpinknkiluvgzdq.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_6pu7euAl4FBbVgj1_O2BkA_Kynq6Bot';
   const PKCE_STORAGE_KEY = 'survivalfi_pkce_verifier';
   const SESSION_STORAGE_KEY = 'survivalfi_session';
+
+  // ===== DATABASE SCHEMA (hardcoded based on actual table structure) =====
+  // transactions table PK: transaction_id (NOT id)
+  // notifications table PK: notification_id (NOT id)
+  // notifications type constraint allows: 'danger', 'warning', 'info', 'success'
+  const DB_SCHEMA = {
+    transactions: {
+      idColumn: 'transaction_id',
+      columns: ['transaction_id', 'user_id', 'type', 'amount', 'category_key', 'expense_type', 'description', 'date', 'created_at']
+    },
+    notifications: {
+      idColumn: 'notification_id',
+      validTypes: ['danger', 'warning', 'info', 'success', 'critical'],
+      columns: ['notification_id', 'user_id', 'type', 'text', 'timestamp']
+    },
+    settings: {
+      idColumn: 'user_id',
+      columns: ['user_id', 'monthly_income', 'monthly_fixed', 'monthly_budget', 'survival_threshold', 'impulsive_threshold', 'theme']
+    }
+  };
 
   // ===== Category Config (local fallback) =====
   const CATEGORIES = {
@@ -70,7 +93,7 @@ import { supabaseClient } from './supabase.js';
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
-  // ===== PKCE Helpers (manual, bypassing cookie storage blocks) =====
+  // ===== PKCE Helpers =====
   function generateCodeVerifier() {
     const array = new Uint8Array(32);
     crypto.getRandomValues(array);
@@ -97,44 +120,40 @@ import { supabaseClient } from './supabase.js';
       debugLog('PKCE verifier stored (' + verifier.substring(0, 8) + '...)');
     } catch (e) {
       debugLog('Failed to store PKCE verifier: ' + e.message);
-      console.error('Failed to store PKCE verifier:', e);
     }
   }
 
   function getPkceVerifier() {
     try {
       const v = localStorage.getItem(PKCE_STORAGE_KEY);
-      if (v) {
-        debugLog('PKCE verifier retrieved (' + v.substring(0, 8) + '...)');
-      } else {
-        debugLog('PKCE verifier NOT found in localStorage');
-      }
+      if (v) debugLog('PKCE verifier retrieved (' + v.substring(0, 8) + '...)');
+      else debugLog('PKCE verifier NOT found');
       return v;
     } catch (e) {
       debugLog('Failed to get PKCE verifier: ' + e.message);
-      console.error('Failed to get PKCE verifier:', e);
       return null;
     }
   }
 
   function clearPkceVerifier() {
-    try {
-      localStorage.removeItem(PKCE_STORAGE_KEY);
-    } catch (e) {
-      console.error('Failed to clear PKCE verifier:', e);
-    }
+    try { localStorage.removeItem(PKCE_STORAGE_KEY); } catch (e) {}
   }
 
-  // ===== Manual Token Exchange (bypasses cookie-based verifier issues) =====
+  // ===== Manual Token Exchange =====
   async function manualExchangeCodeForSession(authCode, codeVerifier) {
     debugLog('Manual token exchange starting...');
     try {
-      const requestBody = {
-        auth_code: authCode,
-        code_verifier: codeVerifier,
-      };
-      debugLog('Sending token request to Supabase...');
+      // First try: Use Supabase's built-in exchange (handles their PKCE)
+      debugLog('Trying built-in exchange first...');
+      const { data: builtInData, error: builtInError } = await supabaseClient.auth.exchangeCodeForSession(authCode);
+      if (!builtInError && builtInData?.session) {
+        debugLog('Built-in exchange succeeded');
+        return { session: builtInData.session, user: builtInData.session?.user };
+      }
+      if (builtInError) debugLog('Built-in exchange failed: ' + builtInError.message);
 
+      // Second try: Manual exchange with our stored verifier
+      debugLog('Trying manual exchange...');
       const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
         method: 'POST',
         headers: {
@@ -142,86 +161,60 @@ import { supabaseClient } from './supabase.js';
           'apikey': SUPABASE_ANON_KEY,
           'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify({ auth_code: authCode, code_verifier: codeVerifier }),
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        debugLog('Token exchange HTTP error: ' + response.status + ' - ' + errorText);
         throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
       }
 
       const tokenData = await response.json();
-      debugLog('Token exchange HTTP success, got tokens');
+      if (!tokenData.access_token) throw new Error('No access_token in response');
 
-      if (!tokenData.access_token) {
-        debugLog('No access_token in response: ' + JSON.stringify(tokenData));
-        throw new Error('No access_token in token response');
-      }
-
-      // Set session in supabase client
-      debugLog('Setting session in Supabase client...');
       const { data, error } = await supabaseClient.auth.setSession({
         access_token: tokenData.access_token,
         refresh_token: tokenData.refresh_token,
       });
 
-      if (error) {
-        debugLog('setSession error: ' + error.message);
-        throw error;
-      }
-
-      debugLog('Session set successfully');
+      if (error) throw error;
       return { session: data.session, user: data.session?.user };
     } catch (err) {
       debugLog('Manual exchange error: ' + err.message);
-      console.error('Manual exchange error:', err);
       throw err;
     }
   }
 
-  // ===== Session Persistence (manual, bypassing blocked localStorage) =====
+  // ===== Session Persistence =====
   function storeSession(session) {
     try {
-      const sessionData = {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
         access_token: session.access_token,
         refresh_token: session.refresh_token,
         expires_at: session.expires_at,
-        user: {
-          id: session.user.id,
-          email: session.user.email,
-        },
-      };
-      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionData));
-      debugLog('Session stored in localStorage');
+        user: { id: session.user.id, email: session.user.email },
+      }));
+      debugLog('Session stored');
     } catch (e) {
       debugLog('Failed to store session: ' + e.message);
-      console.error('Failed to store session:', e);
     }
   }
 
   async function restoreSession() {
     try {
       const saved = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (!saved) {
-        debugLog('No saved session in localStorage');
-        return false;
-      }
+      if (!saved) return false;
 
       const sessionData = JSON.parse(saved);
-      if (!sessionData.access_token || !sessionData.refresh_token) {
-        debugLog('Saved session missing tokens');
-        return false;
-      }
+      if (!sessionData.access_token || !sessionData.refresh_token) return false;
 
-      debugLog('Restoring session from localStorage...');
+      debugLog('Restoring session...');
       const { data, error } = await supabaseClient.auth.setSession({
         access_token: sessionData.access_token,
         refresh_token: sessionData.refresh_token,
       });
 
       if (error) {
-        debugLog('Session restore failed: ' + error.message);
         localStorage.removeItem(SESSION_STORAGE_KEY);
         return false;
       }
@@ -233,7 +226,6 @@ import { supabaseClient } from './supabase.js';
         return true;
       }
     } catch (e) {
-      debugLog('Failed to restore session: ' + e.message);
       localStorage.removeItem(SESSION_STORAGE_KEY);
     }
     return false;
@@ -242,108 +234,30 @@ import { supabaseClient } from './supabase.js';
   // ===== Debug Helper =====
   function debugLog(msg) {
     console.log('[SurvivalFi]', msg);
-    // Also show on page for debugging
     const debugDiv = document.getElementById('debug-output');
     if (debugDiv) {
       debugDiv.innerHTML += '<div style="font-size:12px;color:#888;">' + msg + '</div>';
     }
   }
 
+  // ===== Map notification type to valid DB value =====
+  function mapNotificationType(type) {
+    const validTypes = DB_SCHEMA.notifications.validTypes;
+    if (validTypes.includes(type)) return type;
+    // Map common alternatives
+    const map = { 'danger': 'critical', 'warning': 'warning', 'info': 'info', 'success': 'success' };
+    if (validTypes.includes(map[type])) return map[type];
+    return validTypes[0] || 'info';
+  }
+
   // ===== Initialization =====
   async function init() {
     debugLog('Initializing...');
 
-    // EARLY CHECK: Look for OAuth code BEFORE anything else
-    const urlParams = new URLSearchParams(window.location.search);
-    const authCode = urlParams.get('code');
-    const hasCode = !!authCode;
-    debugLog('Has auth code: ' + hasCode + (hasCode ? ' (' + authCode.substring(0,8) + '...)' : ''));
-
     await loadFromStorage();
     debugLog('Storage loaded. User: ' + (state.user?.email || 'none'));
 
-    // STEP 1: Handle OAuth callback (PKCE code in URL)
-    if (authCode && !state.user) {
-      debugLog('PKCE: Processing authorization code...');
-
-      // Show loading state on auth screen
-      const authScreen = document.getElementById('auth-screen');
-      if (authScreen) {
-        authScreen.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;"><h2>Signing you in...</h2><p>Please wait while we complete authentication.</p></div>';
-      }
-
-      const codeVerifier = getPkceVerifier();
-      debugLog('PKCE verifier found: ' + !!codeVerifier);
-
-      if (codeVerifier) {
-        try {
-          debugLog('PKCE: Attempting manual token exchange...');
-          const result = await manualExchangeCodeForSession(authCode, codeVerifier);
-          if (result && result.session) {
-            state.user = { id: result.user.id, email: result.user.email };
-            state.isLocalMode = false;
-            storeSession(result.session);
-            clearPkceVerifier();
-            window.history.replaceState(null, '', window.location.pathname);
-            debugLog('PKCE: Session established!');
-          } else {
-            debugLog('PKCE: Manual exchange returned no session');
-            window.history.replaceState(null, '', window.location.pathname);
-          }
-        } catch (err) {
-          debugLog('PKCE manual exchange failed: ' + err.message);
-          console.error(err);
-          window.history.replaceState(null, '', window.location.pathname);
-        }
-      } else {
-        debugLog('PKCE: No verifier found, trying built-in exchange...');
-        try {
-          const { data, error } = await supabaseClient.auth.exchangeCodeForSession(authCode);
-          if (error) throw error;
-          if (data && data.session) {
-            state.user = { id: data.session.user.id, email: data.session.user.email };
-            state.isLocalMode = false;
-            storeSession(data.session);
-            window.history.replaceState(null, '', window.location.pathname);
-            debugLog('PKCE: Session established via built-in exchange');
-          } else {
-            debugLog('PKCE: Built-in exchange returned no session');
-            window.history.replaceState(null, '', window.location.pathname);
-          }
-        } catch (err2) {
-          debugLog('PKCE built-in exchange failed: ' + err2.message);
-          console.error(err2);
-          window.history.replaceState(null, '', window.location.pathname);
-        }
-      }
-    }
-
-    // STEP 2: Try restoring session from localStorage
-    if (!state.user) {
-      debugLog('Trying to restore session from localStorage...');
-      const restored = await restoreSession();
-      debugLog('Session restored: ' + restored);
-      if (restored) {
-        await syncFromSupabase();
-      }
-    }
-
-    // STEP 3: Try normal session check
-    if (!state.user) {
-      debugLog('Checking existing Supabase session...');
-      await checkAuthSession();
-      debugLog('After checkAuthSession, user: ' + (state.user?.email || 'none'));
-    }
-
-    // STEP 4: Hash token fallback
-    if (!state.user && !state.isLocalMode && window.location.hash.includes('access_token')) {
-      debugLog('Trying hash token fallback...');
-      await recoverSessionFromHash();
-    }
-
-    debugLog('Loading categories...');
-    await loadCategoriesFromSupabase();
-
+    // STEP 1: Setup UI first
     debugLog('Setting up UI...');
     setupAuth();
     setupNavigation();
@@ -357,7 +271,111 @@ import { supabaseClient } from './supabase.js';
     setupExportClear();
     setupThemeToggle();
     setupCategoryFiltering();
+    debugLog('UI setup complete');
 
+    // STEP 2: Handle OAuth callback
+    const urlParams = new URLSearchParams(window.location.search);
+    const authCode = urlParams.get('code');
+    const hasCode = !!authCode;
+    debugLog('Has auth code: ' + hasCode + (hasCode ? ' (' + authCode.substring(0,8) + '...)' : ''));
+
+    if (authCode && !state.user) {
+      isProcessingOAuth = true;
+      debugLog('PKCE: Processing authorization code...');
+      showToast('Completing sign-in...', 'info');
+
+      const codeVerifier = getPkceVerifier();
+      debugLog('PKCE verifier found: ' + !!codeVerifier);
+
+      if (codeVerifier) {
+        try {
+          debugLog('PKCE: Manual token exchange...');
+          const result = await manualExchangeCodeForSession(authCode, codeVerifier);
+          if (result && result.session) {
+            state.user = { id: result.user.id, email: result.user.email };
+            state.isLocalMode = false;
+            storeSession(result.session);
+            clearPkceVerifier();
+            window.history.replaceState(null, '', window.location.pathname);
+            debugLog('PKCE: Session established!');
+
+            // Small delay to let onAuthStateChange settle if it's going to fire
+            await new Promise(r => setTimeout(r, 100));
+
+            debugLog('Uploading local data...');
+            await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+            debugLog('Syncing from Supabase...');
+            await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
+            debugLog('Data sync complete');
+          } else {
+            debugLog('PKCE: Manual exchange returned no session');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        } catch (err) {
+          debugLog('PKCE manual exchange failed: ' + err.message);
+          console.error(err);
+          window.history.replaceState(null, '', window.location.pathname);
+          showToast('Sign-in failed: ' + err.message, 'error');
+        }
+      } else {
+        debugLog('PKCE: No verifier, trying built-in exchange...');
+        try {
+          const { data, error } = await supabaseClient.auth.exchangeCodeForSession(authCode);
+          if (error) throw error;
+          if (data && data.session) {
+            state.user = { id: data.session.user.id, email: data.session.user.email };
+            state.isLocalMode = false;
+            storeSession(data.session);
+            window.history.replaceState(null, '', window.location.pathname);
+            debugLog('PKCE: Built-in exchange success');
+
+            // Small delay to let onAuthStateChange settle if it's going to fire
+            await new Promise(r => setTimeout(r, 100));
+
+            debugLog('Uploading local data...');
+            await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+            debugLog('Syncing from Supabase...');
+            await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
+            debugLog('Data sync complete');
+          } else {
+            debugLog('PKCE: Built-in exchange returned no session');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        } catch (err2) {
+          debugLog('PKCE built-in exchange failed: ' + err2.message);
+          console.error(err2);
+          window.history.replaceState(null, '', window.location.pathname);
+          showToast('Sign-in failed: ' + err2.message, 'error');
+        }
+      }
+      isProcessingOAuth = false;
+    }
+
+    // STEP 3: Restore from localStorage
+    if (!state.user) {
+      debugLog('Restoring session from localStorage...');
+      const restored = await restoreSession();
+      debugLog('Session restored: ' + restored);
+      if (restored) await syncFromSupabase();
+    }
+
+    // STEP 4: Normal session check
+    if (!state.user) {
+      debugLog('Checking existing Supabase session...');
+      await checkAuthSession();
+      debugLog('After checkAuthSession, user: ' + (state.user?.email || 'none'));
+    }
+
+    // STEP 5: Hash token fallback
+    if (!state.user && !state.isLocalMode && window.location.hash.includes('access_token')) {
+      debugLog('Trying hash token fallback...');
+      await recoverSessionFromHash();
+    }
+
+    debugLog('Loading categories...');
+    await loadCategoriesFromSupabase();
+
+    // STEP 6: Show correct screen
     if (state.user || state.isLocalMode) {
       debugLog('Showing app for user: ' + (state.user?.email || 'Local User'));
       showApp();
@@ -365,6 +383,7 @@ import { supabaseClient } from './supabase.js';
       debugLog('No user, showing auth screen');
     }
 
+    isProcessingOAuth = false; // Ensure flag is cleared
     debugLog('Init complete.');
   }
 
@@ -374,10 +393,7 @@ import { supabaseClient } from './supabase.js';
       const { data: { session }, error } = await supabaseClient.auth.getSession();
       if (error) throw error;
       if (session?.user) {
-        state.user = {
-          id: session.user.id,
-          email: session.user.email,
-        };
+        state.user = { id: session.user.id, email: session.user.email };
         state.isLocalMode = false;
         await syncFromSupabase();
       }
@@ -386,7 +402,7 @@ import { supabaseClient } from './supabase.js';
     }
   }
 
-  // ===== FALLBACK: Recover session from URL hash tokens =====
+  // ===== Recover session from URL hash =====
   async function recoverSessionFromHash() {
     const hash = window.location.hash;
     if (!hash || hash.length < 2) return false;
@@ -394,10 +410,9 @@ import { supabaseClient } from './supabase.js';
     const params = new URLSearchParams(hash.substring(1));
     const accessToken = params.get('access_token');
     const refreshToken = params.get('refresh_token');
-
     if (!accessToken) return false;
 
-    console.log('Recovering session from URL hash tokens (implicit grant fallback)');
+    console.log('Recovering session from URL hash tokens');
 
     try {
       const { data, error } = await supabaseClient.auth.setSession({
@@ -409,7 +424,6 @@ import { supabaseClient } from './supabase.js';
 
       if (data.session) {
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
-
         state.user = { id: data.session.user.id, email: data.session.user.email };
         state.isLocalMode = false;
         storeSession(data.session);
@@ -430,15 +444,11 @@ import { supabaseClient } from './supabase.js';
   // ===== Categories from Supabase =====
   async function loadCategoriesFromSupabase() {
     try {
-      const { data, error } = await supabaseClient
-        .from('categories')
-        .select('*');
+      const { data, error } = await supabaseClient.from('categories').select('*');
       if (error) throw error;
-      if (data && data.length > 0) {
-        state.supabaseCategories = data;
-      }
+      if (data && data.length > 0) state.supabaseCategories = data;
     } catch (err) {
-      console.warn('Failed to load categories from Supabase, using local fallback:', err);
+      console.warn('Failed to load categories from Supabase:', err);
     }
   }
 
@@ -459,13 +469,7 @@ import { supabaseClient } from './supabase.js';
           }
         }
       }
-      return {
-        emoji: supa.emoji,
-        label: supa.label,
-        color: supa.color,
-        type: supa.type,
-        expenseSubtype: subtypes,
-      };
+      return { emoji: supa.emoji, label: supa.label, color: supa.color, type: supa.type, expenseSubtype: subtypes };
     }
     return CATEGORIES[key] || CATEGORIES.other;
   }
@@ -501,19 +505,31 @@ import { supabaseClient } from './supabase.js';
     }
   }
 
-  // ===== Supabase Sync (Merge, don't overwrite) =====
+  // ===== Supabase Sync =====
   async function syncFromSupabase() {
     if (!state.user?.id) return;
+    debugLog('Starting sync from Supabase...');
+
+    // Timeout wrapper to prevent hanging on slow queries
+    const withTimeout = (promise, ms, name) => {
+      return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`${name} timeout after ${ms}ms`)), ms)
+        )
+      ]);
+    };
+
     try {
       const [txRes, notifRes, settingsRes] = await Promise.all([
-        supabaseClient.from('transactions').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }),
-        supabaseClient.from('notifications').select('*').eq('user_id', state.user.id).order('timestamp', { ascending: false }),
-        supabaseClient.from('settings').select('*').eq('user_id', state.user.id).maybeSingle(),
+        withTimeout(supabaseClient.from('transactions').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }), 15000, 'transactions'),
+        withTimeout(supabaseClient.from('notifications').select('*').eq('user_id', state.user.id).order('timestamp', { ascending: false }), 15000, 'notifications'),
+        withTimeout(supabaseClient.from('settings').select('*').eq('user_id', state.user.id).maybeSingle(), 15000, 'settings'),
       ]);
 
       if (txRes.data) {
         const supaTx = txRes.data.map(t => ({
-          id: t.id,
+          id: t.transaction_id || t.id || t.uuid,
           type: t.type,
           amount: parseFloat(t.amount),
           category: t.category_key,
@@ -530,7 +546,7 @@ import { supabaseClient } from './supabase.js';
 
       if (notifRes.data) {
         const supaNotif = notifRes.data.map(n => ({
-          id: n.id,
+          id: n.notification_id,
           type: n.type,
           text: n.text,
           timestamp: n.timestamp,
@@ -550,24 +566,40 @@ import { supabaseClient } from './supabase.js';
           monthlyBudget: parseFloat(settingsRes.data.monthly_budget) || state.settings.monthlyBudget,
           theme: settingsRes.data.theme || state.settings.theme,
         };
+        debugLog('Settings loaded from Supabase');
       }
 
       saveToStorage();
     } catch (err) {
+      debugLog('Sync from Supabase failed: ' + err.message);
       console.warn('Failed to sync from Supabase:', err);
+      // Don't block the app - local data is still available
+      showToast('Sync delayed - working offline', 'info');
     }
+    debugLog('Sync from Supabase complete');
   }
 
-  // ===== Upload local data to Supabase (on first sign-in) =====
+  // ===== Upload local data =====
   async function uploadLocalDataToSupabase() {
-    if (!state.user?.id) return;
+    if (!state.user?.id) {
+      debugLog('Skip upload: no user id');
+      return;
+    }
+    const unsynced = state.transactions.filter(tx => !tx._synced);
+    debugLog('Uploading ' + unsynced.length + ' of ' + state.transactions.length + ' transactions...');
+    if (unsynced.length === 0) {
+      debugLog('All transactions already synced');
+      await syncSettingsToSupabase().catch(e => debugLog('Settings sync error: ' + e.message));
+      return;
+    }
     try {
-      for (const tx of state.transactions) {
+      for (const tx of unsynced) {
         await syncTransactionToSupabase(tx);
       }
       await syncSettingsToSupabase();
+      debugLog('Upload complete');
     } catch (err) {
-      console.warn('Failed to upload local data:', err);
+      debugLog('Upload failed: ' + err.message);
     }
   }
 
@@ -589,6 +621,12 @@ import { supabaseClient } from './supabase.js';
     const title = $('#auth-title');
     const submitBtn = $('#auth-submit');
     const forgotLink = $('#auth-forgot-link');
+
+    if (!form || !toggle || !title || !submitBtn) {
+      debugLog('Auth elements not ready, deferring...');
+      setTimeout(setupAuth, 500);
+      return;
+    }
 
     toggle.addEventListener('click', () => {
       state.isRegistering = !state.isRegistering;
@@ -619,7 +657,7 @@ import { supabaseClient } from './supabase.js';
           await syncFromSupabase();
           saveToStorage();
           showApp();
-          showToast('Account created! Check your email for verification.', 'success');
+          showToast('Account created! Check your email.', 'success');
         } else {
           result = await supabaseClient.auth.signInWithPassword({ email, password });
           if (result.error) throw result.error;
@@ -648,76 +686,64 @@ import { supabaseClient } from './supabase.js';
           redirectTo: window.location.origin,
         });
         if (error) throw error;
-        showToast('Password reset email sent! Check your inbox.', 'success');
+        showToast('Password reset email sent!', 'success');
       } catch (err) {
         showToast(err.message || 'Failed to send reset email', 'error');
       }
     });
 
-    // ===== Google OAuth with manual PKCE =====
+    // Google OAuth
     $('#oauth-google').addEventListener('click', async () => {
       try {
-        debugLog('Starting Google OAuth with manual PKCE...');
-
-        // Generate PKCE pair manually
+        debugLog('Starting Google OAuth...');
+        // Generate and store our own PKCE verifier as backup
         const codeVerifier = generateCodeVerifier();
         const codeChallenge = await generateCodeChallenge(codeVerifier);
         storePkceVerifier(codeVerifier);
 
-        debugLog('PKCE pair generated, getting OAuth URL from Supabase...');
-
-        // Use Supabase's signInWithOAuth but with our PKCE
+        // Use Supabase's built-in OAuth with PKCE - let it handle the flow
+        // The redirectTo must match exactly what's configured in Supabase dashboard
         const { data, error } = await supabaseClient.auth.signInWithOAuth({
           provider: 'google',
-          options: { 
-            redirectTo: 'https://survivalfi.moriowada.com',
-            skipBrowserRedirect: true,
-          },
-        });
-
-        if (error) {
-          debugLog('signInWithOAuth error: ' + error.message);
-          throw error;
-        }
-
-        if (data?.url) {
-          debugLog('Got OAuth URL from Supabase, appending PKCE challenge...');
-          // Append our PKCE code challenge to the URL
-          const url = new URL(data.url);
-          url.searchParams.set('code_challenge', codeChallenge);
-          url.searchParams.set('code_challenge_method', 'S256');
-          debugLog('Redirecting to: ' + url.hostname + '...');
-          window.location.href = url.toString();
-        } else {
-          debugLog('No OAuth URL returned from Supabase');
-          showToast('Failed to get OAuth URL', 'error');
-        }
-      } catch (err) {
-        debugLog('Google sign-in error: ' + err.message);
-        console.error('Google sign-in error:', err);
-        showToast(err.message || 'Google sign-in failed', 'error');
-      }
-    });
-
-    // ===== GitHub OAuth =====
-    $('#oauth-github').addEventListener('click', async () => {
-      try {
-        console.log('Starting GitHub OAuth...');
-
-        const { data, error } = await supabaseClient.auth.signInWithOAuth({
-          provider: 'github',
-          options: { 
-            redirectTo: 'https://survivalfi.moriowada.com',
+          options: {
+            redirectTo: window.location.origin,
+            skipBrowserRedirect: false, // Let Supabase handle the redirect
           },
         });
 
         if (error) throw error;
-
+        // With skipBrowserRedirect: false, Supabase handles the redirect automatically
+        // If for some reason it doesn't, fallback to manual
         if (data?.url) {
-          window.location.href = data.url;
+          debugLog('OAuth URL obtained, redirecting...');
+          // The URL from Supabase already includes their code_challenge
+          // We append ours as backup (some Supabase versions support this)
+          const url = new URL(data.url);
+          // Only add our challenge if not already present
+          if (!url.searchParams.has('code_challenge')) {
+            url.searchParams.set('code_challenge', codeChallenge);
+            url.searchParams.set('code_challenge_method', 'S256');
+          }
+          window.location.href = url.toString();
+        } else {
+          showToast('Failed to get OAuth URL', 'error');
         }
       } catch (err) {
-        console.error('GitHub sign-in error:', err);
+        debugLog('Google sign-in error: ' + err.message);
+        showToast(err.message || 'Google sign-in failed', 'error');
+      }
+    });
+
+    // GitHub OAuth
+    $('#oauth-github').addEventListener('click', async () => {
+      try {
+        const { data, error } = await supabaseClient.auth.signInWithOAuth({
+          provider: 'github',
+          options: { redirectTo: 'https://survivalfi.moriowada.com' },
+        });
+        if (error) throw error;
+        if (data?.url) window.location.href = data.url;
+      } catch (err) {
         showToast(err.message || 'GitHub sign-in failed', 'error');
       }
     });
@@ -730,20 +756,29 @@ import { supabaseClient } from './supabase.js';
       showToast('Using local mode - data stays on this device', 'info');
     });
 
-    // ===== Auth State Change Listener =====
+    // Auth State Change Listener
     supabaseClient.auth.onAuthStateChange(async (event, session) => {
-      console.log('Auth state changed:', event, session?.user?.email);
+      debugLog('Auth state changed: ' + event + ' ' + (session?.user?.email || ''));
 
       if (event === 'SIGNED_IN' && session?.user) {
+        // Skip if we just processed OAuth in init() to avoid double sync
+        if (isProcessingOAuth) {
+          debugLog('Skipping SIGNED_IN sync - OAuth already processed in init()');
+          isProcessingOAuth = false;
+          state.user = { id: session.user.id, email: session.user.email };
+          state.isLocalMode = false;
+          storeSession(session);
+          saveToStorage();
+          if (!$('#app-screen').classList.contains('active')) showApp();
+          return;
+        }
         state.user = { id: session.user.id, email: session.user.email };
         state.isLocalMode = false;
         storeSession(session);
-        await uploadLocalDataToSupabase();
-        await syncFromSupabase();
         saveToStorage();
-        if (!$('#app-screen').classList.contains('active')) {
-          showApp();
-        }
+        await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+        await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
+        if (!$('#app-screen').classList.contains('active')) showApp();
         showToast('Signed in successfully!', 'success');
       }
       if (event === 'SIGNED_OUT') {
@@ -758,12 +793,21 @@ import { supabaseClient } from './supabase.js';
     });
   }
 
-  // ===== Supabase Database Operations =====
+  // ===== FIXED: Supabase Database Operations =====
+  // Uses transaction_id (NOT id) for transactions table
   async function syncTransactionToSupabase(tx) {
-    if (!state.user?.id || state.isLocalMode) return;
+    if (!state.user?.id || state.isLocalMode) {
+      debugLog('Skip sync: no user id or local mode');
+      return;
+    }
+    if (tx._synced) {
+      debugLog('Transaction already synced: ' + tx.id);
+      return;
+    }
+    debugLog('Syncing transaction: ' + tx.id);
     try {
-      await supabaseClient.from('transactions').upsert({
-        id: tx.id,
+      const { data, error } = await supabaseClient.from('transactions').upsert({
+        transaction_id: tx.id,
         user_id: state.user.id,
         type: tx.type,
         amount: tx.amount,
@@ -773,39 +817,78 @@ import { supabaseClient } from './supabase.js';
         date: tx.date,
         created_at: tx.createdAt,
       });
+
+      if (error) {
+        debugLog('Sync error: ' + error.message);
+        throw error;
+      }
+      tx._synced = true;
+      saveToStorage();
+      debugLog('Transaction synced successfully');
     } catch (err) {
+      debugLog('Sync failed: ' + err.message);
       console.warn('Sync transaction failed:', err);
     }
   }
 
+  // FIXED: Uses transaction_id for delete filter
   async function deleteTransactionFromSupabase(txId) {
     if (!state.user?.id || state.isLocalMode) return;
     try {
-      await supabaseClient.from('transactions').delete().eq('id', txId);
+      const { error } = await supabaseClient.from('transactions').delete().eq('transaction_id', txId);
+      if (error) throw error;
     } catch (err) {
       console.warn('Delete sync failed:', err);
     }
   }
 
+  // FIXED: Uses notification_id and maps type to valid constraint values
   async function syncNotificationToSupabase(notif) {
     if (!state.user?.id || state.isLocalMode) return;
     try {
-      await supabaseClient.from('notifications').upsert({
-        id: notif.id,
+      const dbType = mapNotificationType(notif.type);
+
+      const { error } = await supabaseClient.from('notifications').upsert({
+        notification_id: notif.id,
         user_id: state.user.id,
-        type: notif.type,
+        type: dbType,
         text: notif.text,
         timestamp: notif.timestamp,
-      });
+      }, { onConflict: 'notification_id' }).select();
+
+      if (error) {
+        debugLog('Notification sync error: ' + error.message);
+        // If constraint still fails, try with 'info' as ultimate fallback
+        if (error.message.includes('check constraint')) {
+          const { error: fallbackError } = await supabaseClient.from('notifications').upsert({
+            notification_id: notif.id,
+            user_id: state.user.id,
+            type: 'info',
+            text: notif.text,
+            timestamp: notif.timestamp,
+          }, { onConflict: 'notification_id' }).select();
+          if (fallbackError) {
+            console.warn('Fallback also failed:', fallbackError.message);
+          } else {
+            debugLog('Notification synced with fallback type');
+          }
+        }
+      } else {
+        debugLog('Notification synced: ' + notif.id);
+      }
     } catch (err) {
       console.warn('Sync notification failed:', err);
     }
   }
 
   async function syncSettingsToSupabase() {
-    if (!state.user?.id || state.isLocalMode) return;
+    if (!state.user?.id || state.isLocalMode) {
+      debugLog('Skip settings sync');
+      return;
+    }
+    debugLog('Syncing settings...');
     try {
-      await supabaseClient.from('settings').upsert({
+      const { data, error } = await supabaseClient.from('settings').upsert({
         user_id: state.user.id,
         monthly_income: state.settings.monthlyIncome,
         monthly_fixed: state.settings.monthlyFixed,
@@ -813,9 +896,15 @@ import { supabaseClient } from './supabase.js';
         survival_threshold: state.settings.survivalThreshold,
         impulsive_threshold: state.settings.impulsiveThreshold,
         theme: state.settings.theme,
-      });
+      }, { onConflict: 'user_id' }).select();
+
+      if (error) {
+        debugLog('Settings sync error: ' + error.message);
+        throw error;
+      }
+      debugLog('Settings synced');
     } catch (err) {
-      console.warn('Sync settings failed:', err);
+      debugLog('Settings sync failed: ' + err.message);
     }
   }
 
@@ -855,18 +944,19 @@ import { supabaseClient } from './supabase.js';
       }
     });
 
-    $('#logout-btn').addEventListener('click', async () => {
-      if (state.user) {
-        await supabaseClient.auth.signOut().catch(() => {});
-      }
-      state.user = null;
-      state.isLocalMode = false;
-      localStorage.removeItem(SESSION_STORAGE_KEY);
-      saveToStorage();
-      $('#app-screen').classList.remove('active');
-      $('#auth-screen').classList.add('active');
-      showToast('Signed out', 'info');
-    });
+    const logoutBtn = $('#logout-btn');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async () => {
+        if (state.user) await supabaseClient.auth.signOut().catch(() => {});
+        state.user = null;
+        state.isLocalMode = false;
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        saveToStorage();
+        $('#app-screen').classList.remove('active');
+        $('#auth-screen').classList.add('active');
+        showToast('Signed out', 'info');
+      });
+    }
   }
 
   // ===== Mobile Menu =====
@@ -874,6 +964,12 @@ import { supabaseClient } from './supabase.js';
     const hamburger = $('#hamburger-btn');
     const sidebar = $('.sidebar');
     const overlay = $('#sidebar-overlay');
+
+    if (!hamburger || !sidebar || !overlay) {
+      debugLog('Mobile menu elements not ready, deferring...');
+      setTimeout(setupMobileMenu, 500);
+      return;
+    }
 
     function closeSidebar() {
       sidebar.classList.remove('open');
@@ -890,7 +986,6 @@ import { supabaseClient } from './supabase.js';
     });
 
     overlay.addEventListener('click', closeSidebar);
-
     $$('.nav-item').forEach(item => {
       item.addEventListener('click', () => {
         if (window.innerWidth <= 640) closeSidebar();
@@ -903,6 +998,12 @@ import { supabaseClient } from './supabase.js';
     const form = $('#quick-add-form');
     const typeSelect = $('#qa-type');
     const expenseTypeSelect = $('#qa-expense-type');
+
+    if (!form || !typeSelect || !expenseTypeSelect) {
+      debugLog('Quick add elements not ready, deferring...');
+      setTimeout(setupQuickAdd, 500);
+      return;
+    }
 
     typeSelect.addEventListener('change', () => {
       const isIncome = typeSelect.value === 'income';
@@ -941,6 +1042,11 @@ import { supabaseClient } from './supabase.js';
   // ===== Transaction Form (Modal) =====
   function setupTransactionForm() {
     const form = $('#transaction-form');
+    if (!form) {
+      debugLog('Transaction form not ready, deferring...');
+      setTimeout(setupTransactionForm, 500);
+      return;
+    }
 
     $$('#transaction-form .toggle-group').forEach(group => {
       const toggles = group.querySelectorAll('.toggle');
@@ -950,8 +1056,7 @@ import { supabaseClient } from './supabase.js';
           t.classList.add('active');
           if (t.dataset.value) {
             $('#tx-type').value = t.dataset.value;
-            const isIncome = t.dataset.value === 'income';
-            $('#expense-type-group').style.display = isIncome ? 'none' : '';
+            $('#expense-type-group').style.display = t.dataset.value === 'income' ? 'none' : '';
             updateTxCategories();
           }
           if (t.dataset.expense) {
@@ -1005,6 +1110,7 @@ import { supabaseClient } from './supabase.js';
   }
 
   function addTransaction(tx) {
+    tx._synced = false; // Mark as needing sync
     state.transactions.unshift(tx);
     saveToStorage();
     syncTransactionToSupabase(tx);
@@ -1141,9 +1247,7 @@ import { supabaseClient } from './supabase.js';
     }
 
     const catTotals = {};
-    monthExpenses.forEach(t => {
-      catTotals[t.category] = (catTotals[t.category] || 0) + t.amount;
-    });
+    monthExpenses.forEach(t => { catTotals[t.category] = (catTotals[t.category] || 0) + t.amount; });
 
     const total = Object.values(catTotals).reduce((s, v) => s + v, 0);
     const sorted = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
@@ -1158,73 +1262,38 @@ import { supabaseClient } from './supabase.js';
       const info = getCategoryConfig(cat);
       const pct = amount / total;
       const dashLen = pct * circumference;
-      segments.push(
-        `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${info.color}" stroke-width="36"
-          stroke-dasharray="${dashLen} ${circumference - dashLen}"
-          stroke-dashoffset="${-offset}"
-          transform="rotate(-90 ${cx} ${cy})"/>`
-      );
-      legendItems.push(
-        `<div class="pie-legend-item">
-          <span class="pie-legend-dot" style="background:${info.color}"></span>
-          <span class="pie-legend-label">${info.emoji} ${info.label}</span>
-          <span class="pie-legend-value">${formatCurrency(amount)}</span>
-          <span class="pie-legend-pct">${(pct * 100).toFixed(1)}%</span>
-        </div>`
-      );
+      segments.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${info.color}" stroke-width="36" stroke-dasharray="${dashLen} ${circumference - dashLen}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`);
+      legendItems.push(`<div class="pie-legend-item"><span class="pie-legend-dot" style="background:${info.color}"></span><span class="pie-legend-label">${info.emoji} ${info.label}</span><span class="pie-legend-value">${formatCurrency(amount)}</span><span class="pie-legend-pct">${(pct * 100).toFixed(1)}%</span></div>`);
       offset += dashLen;
     });
 
-    container.innerHTML = `
-      <div class="pie-chart-wrapper">
-        <svg viewBox="0 0 200 200" class="pie-svg">${segments.join('')}
-          <circle cx="${cx}" cy="${cy}" r="52" fill="var(--bg-card)"/>
-        </svg>
-      </div>
-      <div class="pie-legend">${legendItems.join('')}</div>
-    `;
+    container.innerHTML = `<div class="pie-chart-wrapper"><svg viewBox="0 0 200 200" class="pie-svg">${segments.join('')}<circle cx="${cx}" cy="${cy}" r="52" fill="var(--bg-card)"/></svg></div><div class="pie-legend">${legendItems.join('')}</div>`;
   }
 
-  // ============================================================
   // ===== SURVIVAL SCORE =====
-  // ============================================================
-
   function calculateSurvivalScore() {
     const now = new Date();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const dayOfMonth = now.getDate();
     const daysRemaining = daysInMonth - dayOfMonth;
-
     const { monthTx, income, expenses, balance, fixedExpenses, variableExpenses } = getMonthData();
-
     const monthlyIncome = state.settings.monthlyIncome || income || 1;
     const monthlyFixed = state.settings.monthlyFixed || 0;
-
-    const projectedVariable = state.settings.monthlyBudget > 0
-      ? Math.min(variableExpenses, state.settings.monthlyBudget)
-      : variableExpenses;
+    const projectedVariable = state.settings.monthlyBudget > 0 ? Math.min(variableExpenses, state.settings.monthlyBudget) : variableExpenses;
     const totalMonthlyOutflow = monthlyFixed + projectedVariable;
     const runwayMonths = balance / Math.max(totalMonthlyOutflow, 1);
     const runwayScore = calculateRunwayScore(runwayMonths);
-
     const ratioScore = calculateRatioScore(income, expenses);
     const stabilityScore = calculateStabilityScore();
     const bufferScore = calculateBufferScore(balance, monthlyFixed);
 
-    let score = Math.round(
-      runwayScore * 0.40 +
-      ratioScore * 0.30 +
-      stabilityScore * 0.20 +
-      bufferScore * 0.10
-    );
-
+    let score = Math.round(runwayScore * 0.40 + ratioScore * 0.30 + stabilityScore * 0.20 + bufferScore * 0.10);
     score = Math.max(0, Math.min(100, score));
 
     updateSurvivalUI(score, runwayScore, ratioScore, stabilityScore, bufferScore, {
       daysRemaining, daysInMonth, dayOfMonth, balance, monthlyFixed, monthlyIncome,
       fixedExpenses, variableExpenses, income, expenses, monthTx
     });
-
     return score;
   }
 
@@ -1246,29 +1315,23 @@ import { supabaseClient } from './supabase.js';
   function calculateStabilityScore() {
     const expectedIncome = state.settings.monthlyIncome;
     if (expectedIncome <= 0) return 50;
-
     const now = new Date();
     const monthlyIncomes = [];
-
     for (let i = 0; i < 3; i++) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const { income } = getMonthData(d);
       if (income > 0) monthlyIncomes.push(income);
     }
-
     if (monthlyIncomes.length === 0) {
       const { income: currentIncome } = getMonthData(now);
       if (currentIncome <= 0) return 50;
-      const ratio = currentIncome / expectedIncome;
-      return Math.min(100, ratio * 100);
+      return Math.min(100, (currentIncome / expectedIncome) * 100);
     }
-
     const ratios = monthlyIncomes.map(actual => actual / expectedIncome);
     const mean = ratios.reduce((a, b) => a + b, 0) / ratios.length;
     const variance = ratios.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / ratios.length;
     const stdDev = Math.sqrt(variance);
     const cv = stdDev / mean;
-
     if (cv <= 0.2) return 100;
     if (cv >= 1.0) return 0;
     return 100 - ((cv - 0.2) / 0.8) * 100;
@@ -1281,18 +1344,14 @@ import { supabaseClient } from './supabase.js';
   }
 
   function updateSurvivalUI(score, runwayScore, ratioScore, stabilityScore, bufferScore, data) {
-    const {
-      daysRemaining, daysInMonth, dayOfMonth, balance,
-      monthlyFixed, monthlyIncome, fixedExpenses, variableExpenses, income, expenses, monthTx
-    } = data;
+    const { daysRemaining, daysInMonth, dayOfMonth, balance, monthlyFixed, monthlyIncome, fixedExpenses, variableExpenses, income, expenses, monthTx } = data;
 
     $('#stat-survival').textContent = score + '%';
     $('#stat-survival').className = 'stat-value ' + (score <= 20 ? 'danger' : score <= 50 ? 'warning' : 'safe');
 
     const circle = $('#survival-circle');
     const circumference = 534;
-    const offset = circumference - (score / 100) * circumference;
-    circle.style.strokeDashoffset = offset;
+    circle.style.strokeDashoffset = circumference - (score / 100) * circumference;
     circle.style.stroke = getSurvivalColor(score);
     $('#survival-number').textContent = score + '%';
 
@@ -1321,93 +1380,62 @@ import { supabaseClient } from './supabase.js';
     if (monthlyFixed > 0) {
       const remainingFixed = Math.max(0, monthlyFixed - fixedExpenses);
       const canCoverRemaining = balance >= remainingFixed;
-
       if (remainingFixed <= 0 || canCoverRemaining) {
-        fixedLabel = 'Fully covered';
-        fixedPct = 100;
-        fixedColor = 'var(--green)';
+        fixedLabel = 'Fully covered'; fixedPct = 100; fixedColor = 'var(--green)';
       } else {
-        const shortfall = remainingFixed - balance;
-        fixedLabel = formatCurrency(Math.max(0, shortfall)) + ' needed';
+        fixedLabel = formatCurrency(Math.max(0, remainingFixed - balance)) + ' needed';
         fixedPct = Math.min((fixedExpenses / monthlyFixed) * 100, 100);
         fixedColor = 'var(--orange)';
       }
     } else {
-      fixedLabel = 'No fixed expenses set';
-      fixedPct = 50;
-      fixedColor = 'var(--accent)';
+      fixedLabel = 'No fixed expenses set'; fixedPct = 50; fixedColor = 'var(--accent)';
     }
     $('#factor-fixed').textContent = fixedLabel;
     $('#factor-fixed-bar').style.width = fixedPct + '%';
     $('#factor-fixed-bar').style.background = fixedColor;
 
-    const impulsiveTotal = monthTx => monthTx
-      .filter(t => t.type === 'expense' && IMPULSIVE_CATEGORIES.includes(t.category))
-      .reduce((s, t) => s + t.amount, 0);
-    const impulsiveAmount = impulsiveTotal(monthTx);
+    const impulsiveAmount = monthTx.filter(t => t.type === 'expense' && IMPULSIVE_CATEGORIES.includes(t.category)).reduce((s, t) => s + t.amount, 0);
     const impulsiveRatio = monthlyIncome > 0 ? (impulsiveAmount / monthlyIncome) * 100 : 0;
-
     $('#factor-impulsive').textContent = impulsiveRatio.toFixed(1) + '% of income';
     const impPct = Math.min(impulsiveRatio * 3, 100);
     $('#factor-impulsive-bar').style.width = impPct + '%';
-    $('#factor-impulsive-bar').style.background = impulsiveRatio <= state.settings.impulsiveThreshold
-      ? 'var(--green)' : impulsiveRatio <= state.settings.impulsiveThreshold * 2 ? 'var(--orange)' : 'var(--red)';
+    $('#factor-impulsive-bar').style.background = impulsiveRatio <= state.settings.impulsiveThreshold ? 'var(--green)' : impulsiveRatio <= state.settings.impulsiveThreshold * 2 ? 'var(--orange)' : 'var(--red)';
   }
 
   // ===== Impulsive Detection =====
   function isImpulsiveTransaction(tx) {
     if (tx.type !== 'expense' || tx.expenseType !== 'variable') return false;
     if (!IMPULSIVE_CATEGORIES.includes(tx.category)) return false;
-
     const { income } = getMonthData();
     if (income <= 0) return false;
-
     const { monthTx } = getMonthData();
-    const catTotal = monthTx
-      .filter(t => t.type === 'expense' && t.category === tx.category)
-      .reduce((s, t) => s + t.amount, 0);
-
+    const catTotal = monthTx.filter(t => t.type === 'expense' && t.category === tx.category).reduce((s, t) => s + t.amount, 0);
     return (catTotal / income) * 100 > state.settings.impulsiveThreshold;
   }
 
   function analyzeImpulsiveSpending() {
     const container = $('#impulsive-analysis');
     const { monthTx, income } = getMonthData();
-
     if (income === 0) {
       container.innerHTML = '<p class="empty-state">Add income transactions to enable impulsive spending analysis</p>';
       return;
     }
 
     const analyses = [];
-
     IMPULSIVE_CATEGORIES.forEach(cat => {
-      const catTotal = monthTx
-        .filter(t => t.type === 'expense' && t.category === cat)
-        .reduce((s, t) => s + t.amount, 0);
+      const catTotal = monthTx.filter(t => t.type === 'expense' && t.category === cat).reduce((s, t) => s + t.amount, 0);
       const pct = (catTotal / income) * 100;
       const info = getCategoryConfig(cat);
-
       let level, levelClass, pctClass;
-      if (pct <= state.settings.impulsiveThreshold * 0.5) {
-        level = 'Safe'; levelClass = 'safe'; pctClass = 'ok';
-      } else if (pct <= state.settings.impulsiveThreshold) {
-        level = 'Moderate'; levelClass = 'warning'; pctClass = 'warn';
-      } else {
-        level = 'Impulsive!'; levelClass = ''; pctClass = 'danger';
-      }
-
+      if (pct <= state.settings.impulsiveThreshold * 0.5) { level = 'Safe'; levelClass = 'safe'; pctClass = 'ok'; }
+      else if (pct <= state.settings.impulsiveThreshold) { level = 'Moderate'; levelClass = 'warning'; pctClass = 'warn'; }
+      else { level = 'Impulsive!'; levelClass = ''; pctClass = 'danger'; }
       analyses.push({ cat, info, total: catTotal, pct, level, levelClass, pctClass });
     });
 
-    const otherCats = [...new Set(monthTx
-      .filter(t => t.type === 'expense' && !IMPULSIVE_CATEGORIES.includes(t.category))
-      .map(t => t.category))];
-
+    const otherCats = [...new Set(monthTx.filter(t => t.type === 'expense' && !IMPULSIVE_CATEGORIES.includes(t.category)).map(t => t.category))];
     otherCats.forEach(cat => {
-      const catTotal = monthTx
-        .filter(t => t.type === 'expense' && t.category === cat)
-        .reduce((s, t) => s + t.amount, 0);
+      const catTotal = monthTx.filter(t => t.type === 'expense' && t.category === cat).reduce((s, t) => s + t.amount, 0);
       const pct = (catTotal / income) * 100;
       if (pct > 30) {
         const info = getCategoryConfig(cat);
@@ -1435,6 +1463,11 @@ import { supabaseClient } from './supabase.js';
   function setupNotifications() {
     const bell = $('#notif-bell');
     const panel = $('#notif-panel');
+    if (!bell || !panel) {
+      debugLog('Notification elements not ready, deferring...');
+      setTimeout(setupNotifications, 500);
+      return;
+    }
 
     bell.addEventListener('click', () => {
       panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -1448,9 +1481,7 @@ import { supabaseClient } from './supabase.js';
     });
 
     document.addEventListener('click', (e) => {
-      if (!panel.contains(e.target) && !bell.contains(e.target)) {
-        panel.style.display = 'none';
-      }
+      if (!panel.contains(e.target) && !bell.contains(e.target)) panel.style.display = 'none';
     });
   }
 
@@ -1475,11 +1506,8 @@ import { supabaseClient } from './supabase.js';
 
     if (income > 0) {
       IMPULSIVE_CATEGORIES.forEach(cat => {
-        const catTotal = monthTx
-          .filter(t => t.type === 'expense' && t.category === cat)
-          .reduce((s, t) => s + t.amount, 0);
+        const catTotal = monthTx.filter(t => t.type === 'expense' && t.category === cat).reduce((s, t) => s + t.amount, 0);
         const pct = (catTotal / income) * 100;
-
         if (pct > state.settings.impulsiveThreshold) {
           const info = getCategoryConfig(cat);
           addNotification({
@@ -1494,7 +1522,7 @@ import { supabaseClient } from './supabase.js';
     if (balance < 0) {
       addNotification({
         type: 'danger',
-        text: `Your balance is negative (${formatCurrency(balance)}). You're spending more than you earn this month!`,
+        text: `Your balance is negative (${formatCurrency(balance)}). You're spending more than you earn!`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -1516,9 +1544,7 @@ import { supabaseClient } from './supabase.js';
 
   function addNotification(notif) {
     const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
-    const exists = state.notifications.some(n =>
-      n.text === notif.text && n.timestamp > oneDayAgo
-    );
+    const exists = state.notifications.some(n => n.text === notif.text && n.timestamp > oneDayAgo);
     if (!exists) {
       const newNotif = { ...notif, id: crypto.randomUUID ? crypto.randomUUID() : 'n_' + Date.now() };
       state.notifications.unshift(newNotif);
@@ -1532,7 +1558,6 @@ import { supabaseClient } from './supabase.js';
       list.innerHTML = '<p class="empty-state">No notifications</p>';
       return;
     }
-
     list.innerHTML = state.notifications.map(n => `
       <div class="notif-item">
         <div class="notif-dot ${n.type}"></div>
@@ -1557,7 +1582,15 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Settings =====
   function setupSettings() {
-    $('#save-settings').addEventListener('click', () => {
+    const saveSettings = $('#save-settings');
+    const saveBudget = $('#save-budget');
+    if (!saveSettings || !saveBudget) {
+      debugLog('Settings elements not ready, deferring...');
+      setTimeout(setupSettings, 500);
+      return;
+    }
+
+    saveSettings.addEventListener('click', () => {
       state.settings.survivalThreshold = parseInt($('#threshold-setting').value) || 20;
       state.settings.impulsiveThreshold = parseInt($('#impulsive-threshold').value) || 10;
       saveToStorage();
@@ -1566,7 +1599,7 @@ import { supabaseClient } from './supabase.js';
       showToast('Settings saved!', 'success');
     });
 
-    $('#save-budget').addEventListener('click', () => {
+    saveBudget.addEventListener('click', () => {
       state.settings.monthlyIncome = parseFloat($('#monthly-income').value) || 0;
       state.settings.monthlyFixed = parseFloat($('#monthly-fixed').value) || 0;
       state.settings.monthlyBudget = parseFloat($('#monthly-budget').value) || 0;
@@ -1589,11 +1622,13 @@ import { supabaseClient } from './supabase.js';
   function setupModal() {
     const overlay = $('#modal-overlay');
     const closeBtn = $('#modal-close');
-
+    if (!overlay || !closeBtn) {
+      debugLog('Modal elements not ready, deferring...');
+      setTimeout(setupModal, 500);
+      return;
+    }
     closeBtn.addEventListener('click', closeModal);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeModal();
-    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
   }
 
   function closeModal() {
@@ -1602,8 +1637,15 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Filters =====
   function setupFilters() {
-    $('#filter-type').addEventListener('change', renderAllTransactions);
-    $('#filter-category').addEventListener('change', renderAllTransactions);
+    const filterType = $('#filter-type');
+    const filterCategory = $('#filter-category');
+    if (!filterType || !filterCategory) {
+      debugLog('Filter elements not ready, deferring...');
+      setTimeout(setupFilters, 500);
+      return;
+    }
+    filterType.addEventListener('change', renderAllTransactions);
+    filterCategory.addEventListener('change', renderAllTransactions);
   }
 
   // ===== Theme Toggle =====
@@ -1611,6 +1653,11 @@ import { supabaseClient } from './supabase.js';
     const toggle = $('#theme-toggle');
     const darkIcon = $('#theme-icon-dark');
     const lightIcon = $('#theme-icon-light');
+    if (!toggle) {
+      debugLog('Theme toggle not ready, deferring...');
+      setTimeout(setupThemeToggle, 500);
+      return;
+    }
 
     if (state.settings.theme === 'light') {
       document.body.classList.add('light-mode');
@@ -1630,6 +1677,13 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Category Filtering =====
   function setupCategoryFiltering() {
+    const qaType = $('#qa-type');
+    const txType = $('#tx-type');
+    if (!qaType || !txType) {
+      debugLog('Category filter elements not ready, deferring...');
+      setTimeout(setupCategoryFiltering, 500);
+      return;
+    }
     updateQaCategories();
     updateTxCategories();
   }
@@ -1637,16 +1691,10 @@ import { supabaseClient } from './supabase.js';
   function parseExpenseSubtype(cat) {
     let subtypes = [];
     if (cat.expense_subtype) {
-      try {
-        subtypes = JSON.parse(cat.expense_subtype);
-      } catch (e) {
-        if (typeof cat.expense_subtype === 'string') {
-          subtypes = cat.expense_subtype.split(',').map(s => s.trim());
-        } else if (Array.isArray(cat.expense_subtype)) {
-          subtypes = cat.expense_subtype;
-        } else {
-          subtypes = [];
-        }
+      try { subtypes = JSON.parse(cat.expense_subtype); }
+      catch (e) {
+        if (typeof cat.expense_subtype === 'string') subtypes = cat.expense_subtype.split(',').map(s => s.trim());
+        else if (Array.isArray(cat.expense_subtype)) subtypes = cat.expense_subtype;
       }
     }
     return subtypes;
@@ -1662,13 +1710,10 @@ import { supabaseClient } from './supabase.js';
       state.supabaseCategories.forEach(cat => {
         const catType = cat.type;
         const subtypes = parseExpenseSubtype(cat);
-
         if (type === 'income' && (catType === 'income' || catType === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
-          if (subtypes.includes(expenseType)) {
-            select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
-          }
+          if (subtypes.includes(expenseType)) select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         }
       });
     } else {
@@ -1676,9 +1721,7 @@ import { supabaseClient } from './supabase.js';
         if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, key));
         } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
-          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
-            select.add(new Option(cat.emoji + ' ' + cat.label, key));
-          }
+          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) select.add(new Option(cat.emoji + ' ' + cat.label, key));
         }
       });
     }
@@ -1694,13 +1737,10 @@ import { supabaseClient } from './supabase.js';
       state.supabaseCategories.forEach(cat => {
         const catType = cat.type;
         const subtypes = parseExpenseSubtype(cat);
-
         if (type === 'income' && (catType === 'income' || catType === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
-          if (subtypes.includes(expenseType)) {
-            select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
-          }
+          if (subtypes.includes(expenseType)) select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         }
       });
     } else {
@@ -1708,9 +1748,7 @@ import { supabaseClient } from './supabase.js';
         if (type === 'income' && (cat.type === 'income' || cat.type === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, key));
         } else if (type === 'expense' && (cat.type === 'expense' || cat.type === 'both')) {
-          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) {
-            select.add(new Option(cat.emoji + ' ' + cat.label, key));
-          }
+          if (cat.expenseSubtype && cat.expenseSubtype.includes(expenseType)) select.add(new Option(cat.emoji + ' ' + cat.label, key));
         }
       });
     }
@@ -1718,12 +1756,18 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Export / Clear =====
   function setupExportClear() {
-    $('#export-data').addEventListener('click', () => {
-      const blob = new Blob([JSON.stringify({
-        transactions: state.transactions,
-        settings: state.settings,
-        exportedAt: new Date().toISOString(),
-      }, null, 2)], { type: 'application/json' });
+    const exportBtn = $('#export-data');
+    const importBtn = $('#import-data');
+    const importFile = $('#import-file');
+    const clearBtn = $('#clear-data');
+    if (!exportBtn || !importBtn || !importFile || !clearBtn) {
+      debugLog('Export/Clear elements not ready, deferring...');
+      setTimeout(setupExportClear, 500);
+      return;
+    }
+
+    exportBtn.addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify({ transactions: state.transactions, settings: state.settings, exportedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1733,56 +1777,35 @@ import { supabaseClient } from './supabase.js';
       showToast('Data exported!', 'success');
     });
 
-    $('#import-data').addEventListener('click', () => {
-      $('#import-file').click();
-    });
+    importBtn.addEventListener('click', () => importFile.click());
 
-    $('#import-file').addEventListener('change', async (e) => {
+    importFile.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        if (data.transactions && Array.isArray(data.transactions)) {
-          state.transactions = data.transactions;
-        }
-        if (data.settings) {
-          state.settings = { ...state.settings, ...data.settings };
-        }
+        if (data.transactions && Array.isArray(data.transactions)) state.transactions = data.transactions;
+        if (data.settings) state.settings = { ...state.settings, ...data.settings };
         state.notifications = [];
         saveToStorage();
-
-        if (state.user && !state.isLocalMode) {
-          await uploadLocalDataToSupabase();
-        }
-
+        if (state.user && !state.isLocalMode) await uploadLocalDataToSupabase();
         applySettingsToUI();
         refreshAll();
-        showToast('Data imported successfully!', 'success');
+        showToast('Data imported!', 'success');
       } catch (err) {
-        showToast('Import failed: Invalid JSON file', 'error');
+        showToast('Import failed: Invalid JSON', 'error');
       }
       e.target.value = '';
     });
 
-    $('#clear-data').addEventListener('click', () => {
-      if (confirm('This will delete all your transactions and reset settings. Continue?')) {
+    clearBtn.addEventListener('click', () => {
+      if (confirm('Delete all transactions and reset settings?')) {
         state.transactions = [];
         state.notifications = [];
-        state.settings = {
-          survivalThreshold: 20,
-          impulsiveThreshold: 10,
-          monthlyIncome: 0,
-          monthlyFixed: 0,
-          monthlyBudget: 0,
-          theme: state.settings.theme,
-        };
+        state.settings = { survivalThreshold: 20, impulsiveThreshold: 10, monthlyIncome: 0, monthlyFixed: 0, monthlyBudget: 0, theme: state.settings.theme };
         saveToStorage();
-
-        if (state.user && !state.isLocalMode) {
-          clearSupabaseData().catch(() => {});
-        }
-
+        if (state.user && !state.isLocalMode) clearSupabaseData().catch(() => {});
         applySettingsToUI();
         refreshAll();
         showToast('All data cleared', 'info');
@@ -1816,9 +1839,7 @@ import { supabaseClient } from './supabase.js';
 
   function formatDateTime(dateStr) {
     const d = new Date(dateStr);
-    const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    return date + ' ' + time;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   }
 
   function escapeHtml(str) {
@@ -1828,9 +1849,7 @@ import { supabaseClient } from './supabase.js';
   }
 
   function timeAgo(dateStr) {
-    const now = new Date();
-    const d = new Date(dateStr);
-    const diff = Math.floor((now - d) / 1000);
+    const diff = Math.floor((new Date() - new Date(dateStr)) / 1000);
     if (diff < 60) return 'Just now';
     if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
     if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
@@ -1838,17 +1857,32 @@ import { supabaseClient } from './supabase.js';
   }
 
   // ===== Boot =====
-  (async function() {
-    try {
-      await init();
-    } catch (err) {
-      console.error('Init failed:', err);
-      debugLog('INIT FAILED: ' + err.message);
-      // Show error on auth screen
-      const authScreen = document.getElementById('auth-screen');
-      if (authScreen) {
-        authScreen.innerHTML = '<div style="padding:2rem;text-align:center;"><h2>Application Error</h2><p>' + escapeHtml(err.message) + '</p><p>Check the console for details.</p><button onclick="location.reload()" style="margin-top:1rem;padding:0.5rem 1rem;">Reload</button></div>';
+  function startApp() {
+    debugLog('Components loaded, starting app...');
+    (async function() {
+      try {
+        await init();
+      } catch (err) {
+        console.error('Init failed:', err);
+        debugLog('INIT FAILED: ' + err.message);
+        const authScreen = document.getElementById('auth-screen');
+        if (authScreen) {
+          authScreen.innerHTML = '<div style="padding:2rem;text-align:center;"><h2>Application Error</h2><p>' + escapeHtml(err.message) + '</p><button onclick="location.reload()" style="margin-top:1rem;padding:0.5rem 1rem;">Reload</button></div>';
+        }
       }
-    }
-  })();
+    })();
+  }
+
+  if (window.__survivalfiComponentsLoaded) {
+    startApp();
+  } else {
+    debugLog('Waiting for components...');
+    window.addEventListener('survivalfi-components-loaded', startApp);
+    setTimeout(function() {
+      if (!window.__survivalfiComponentsLoaded) {
+        debugLog('Component timeout, starting anyway...');
+        startApp();
+      }
+    }, 2000);
+  }
 })();

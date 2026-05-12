@@ -1,11 +1,28 @@
-// ===== SurvivalFi — Main Application (Supabase Edition v3) =====
+// ===== SurvivalFi - Main Application (Supabase Edition v5) =====
 // Dual mode: localStorage (offline) | Supabase (signed in)
-// Merge strategy: local data + Supabase data = combined (no overwrite)
+// Fixes: PKCE code verifier stored in localStorage (not cookies), manual token exchange,
+// expense_subtype type handling, Edge tracking prevention compatibility
 
 import { supabaseClient } from './supabase.js';
 
 (function () {
   'use strict';
+
+  // ===== Early Error Handler =====
+  window.addEventListener('error', function(e) {
+    console.error('Global error:', e.message, e.filename, e.lineno);
+    const debugDiv = document.getElementById('debug-output');
+    if (debugDiv) {
+      debugDiv.innerHTML += '<div style="color:red;font-size:12px;">ERROR: ' + e.message + '</div>';
+    }
+  });
+
+  // ===== Check Supabase Availability =====
+  if (typeof supabase === 'undefined') {
+    console.error('Supabase library not loaded! Check that https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2 is accessible.');
+    document.body.innerHTML = '<div style="padding:2rem;text-align:center;"><h2>Loading Error</h2><p>The Supabase library failed to load. This may be due to tracking prevention blocking the CDN.</p><p>Try disabling tracking prevention for this site or use a different browser.</p></div>';
+    return;
+  }
 
   // ===== State =====
   const state = {
@@ -25,20 +42,26 @@ import { supabaseClient } from './supabase.js';
     supabaseCategories: [],
   };
 
+  // ===== Constants =====
+  const SUPABASE_URL = 'https://fgaukbpinknkiluvgzdq.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_6pu7euAl4FBbVgj1_O2BkA_Kynq6Bot';
+  const PKCE_STORAGE_KEY = 'survivalfi_pkce_verifier';
+  const SESSION_STORAGE_KEY = 'survivalfi_session';
+
   // ===== Category Config (local fallback) =====
   const CATEGORIES = {
-    food:            { emoji: '🍜', label: 'Food',             color: '#f59e0b', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
-    transportation:  { emoji: '🚗', label: 'Transportation',   color: '#3b82f6', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
-    housing:         { emoji: '🏠', label: 'Housing',          color: '#8b5cf6', type: 'expense', expenseSubtype: ['fixed'] },
-    utilities:       { emoji: '💡', label: 'Utilities',        color: '#eab308', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
-    entertainment:   { emoji: '🎬', label: 'Entertainment',    color: '#ec4899', type: 'expense', expenseSubtype: ['variable'] },
-    healthcare:      { emoji: '🏥', label: 'Healthcare',       color: '#ef4444', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
-    shopping:        { emoji: '🛍️', label: 'Shopping',         color: '#14b8a6', type: 'expense', expenseSubtype: ['variable'] },
-    education:       { emoji: '📚', label: 'Education',        color: '#6366f1', type: 'expense', expenseSubtype: ['fixed'] },
-    salary:          { emoji: '💼', label: 'Salary',           color: '#22c55e', type: 'income' },
-    freelance:       { emoji: '💻', label: 'Freelance',        color: '#06b6d4', type: 'income' },
-    investment:      { emoji: '📈', label: 'Investment',       color: '#a855f7', type: 'income' },
-    other:           { emoji: '📦', label: 'Other',            color: '#94a3b8', type: 'both',    expenseSubtype: ['variable', 'fixed'] },
+    food:            { emoji: '\ud83c\udf5c', label: 'Food',             color: '#f59e0b', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
+    transportation:  { emoji: '\ud83d\ude97', label: 'Transportation',   color: '#3b82f6', type: 'expense', expenseSubtype: ['variable', 'fixed'] },
+    housing:         { emoji: '\ud83c\udfe0', label: 'Housing',          color: '#8b5cf6', type: 'expense', expenseSubtype: ['fixed'] },
+    utilities:       { emoji: '\ud83d\udca1', label: 'Utilities',        color: '#eab308', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
+    entertainment:   { emoji: '\ud83c\udfac', label: 'Entertainment',    color: '#ec4899', type: 'expense', expenseSubtype: ['variable'] },
+    healthcare:      { emoji: '\ud83c\udfe5', label: 'Healthcare',       color: '#ef4444', type: 'expense', expenseSubtype: ['fixed', 'variable'] },
+    shopping:        { emoji: '\ud83d\udecd\ufe0f', label: 'Shopping',         color: '#14b8a6', type: 'expense', expenseSubtype: ['variable'] },
+    education:       { emoji: '\ud83d\udcda', label: 'Education',        color: '#6366f1', type: 'expense', expenseSubtype: ['fixed'] },
+    salary:          { emoji: '\ud83d\udcbc', label: 'Salary',           color: '#22c55e', type: 'income' },
+    freelance:       { emoji: '\ud83d\udcbb', label: 'Freelance',        color: '#06b6d4', type: 'income' },
+    investment:      { emoji: '\ud83d\udcc8', label: 'Investment',       color: '#a855f7', type: 'income' },
+    other:           { emoji: '\ud83d\udce6', label: 'Other',            color: '#94a3b8', type: 'both',    expenseSubtype: ['variable', 'fixed'] },
   };
 
   const IMPULSIVE_CATEGORIES = ['entertainment', 'shopping'];
@@ -47,11 +70,281 @@ import { supabaseClient } from './supabase.js';
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => document.querySelectorAll(sel);
 
+  // ===== PKCE Helpers (manual, bypassing cookie storage blocks) =====
+  function generateCodeVerifier() {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    return btoa(String.fromCharCode.apply(null, array))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+
+  async function generateCodeChallenge(verifier) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(verifier);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    const array = Array.from(new Uint8Array(digest));
+    return btoa(String.fromCharCode.apply(null, array))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+
+  function storePkceVerifier(verifier) {
+    try {
+      localStorage.setItem(PKCE_STORAGE_KEY, verifier);
+      debugLog('PKCE verifier stored (' + verifier.substring(0, 8) + '...)');
+    } catch (e) {
+      debugLog('Failed to store PKCE verifier: ' + e.message);
+      console.error('Failed to store PKCE verifier:', e);
+    }
+  }
+
+  function getPkceVerifier() {
+    try {
+      const v = localStorage.getItem(PKCE_STORAGE_KEY);
+      if (v) {
+        debugLog('PKCE verifier retrieved (' + v.substring(0, 8) + '...)');
+      } else {
+        debugLog('PKCE verifier NOT found in localStorage');
+      }
+      return v;
+    } catch (e) {
+      debugLog('Failed to get PKCE verifier: ' + e.message);
+      console.error('Failed to get PKCE verifier:', e);
+      return null;
+    }
+  }
+
+  function clearPkceVerifier() {
+    try {
+      localStorage.removeItem(PKCE_STORAGE_KEY);
+    } catch (e) {
+      console.error('Failed to clear PKCE verifier:', e);
+    }
+  }
+
+  // ===== Manual Token Exchange (bypasses cookie-based verifier issues) =====
+  async function manualExchangeCodeForSession(authCode, codeVerifier) {
+    debugLog('Manual token exchange starting...');
+    try {
+      const requestBody = {
+        auth_code: authCode,
+        code_verifier: codeVerifier,
+      };
+      debugLog('Sending token request to Supabase...');
+
+      const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=pkce`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        debugLog('Token exchange HTTP error: ' + response.status + ' - ' + errorText);
+        throw new Error(`Token exchange failed: ${response.status} - ${errorText}`);
+      }
+
+      const tokenData = await response.json();
+      debugLog('Token exchange HTTP success, got tokens');
+
+      if (!tokenData.access_token) {
+        debugLog('No access_token in response: ' + JSON.stringify(tokenData));
+        throw new Error('No access_token in token response');
+      }
+
+      // Set session in supabase client
+      debugLog('Setting session in Supabase client...');
+      const { data, error } = await supabaseClient.auth.setSession({
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+      });
+
+      if (error) {
+        debugLog('setSession error: ' + error.message);
+        throw error;
+      }
+
+      debugLog('Session set successfully');
+      return { session: data.session, user: data.session?.user };
+    } catch (err) {
+      debugLog('Manual exchange error: ' + err.message);
+      console.error('Manual exchange error:', err);
+      throw err;
+    }
+  }
+
+  // ===== Session Persistence (manual, bypassing blocked localStorage) =====
+  function storeSession(session) {
+    try {
+      const sessionData = {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        expires_at: session.expires_at,
+        user: {
+          id: session.user.id,
+          email: session.user.email,
+        },
+      };
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionData));
+      debugLog('Session stored in localStorage');
+    } catch (e) {
+      debugLog('Failed to store session: ' + e.message);
+      console.error('Failed to store session:', e);
+    }
+  }
+
+  async function restoreSession() {
+    try {
+      const saved = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!saved) {
+        debugLog('No saved session in localStorage');
+        return false;
+      }
+
+      const sessionData = JSON.parse(saved);
+      if (!sessionData.access_token || !sessionData.refresh_token) {
+        debugLog('Saved session missing tokens');
+        return false;
+      }
+
+      debugLog('Restoring session from localStorage...');
+      const { data, error } = await supabaseClient.auth.setSession({
+        access_token: sessionData.access_token,
+        refresh_token: sessionData.refresh_token,
+      });
+
+      if (error) {
+        debugLog('Session restore failed: ' + error.message);
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        return false;
+      }
+
+      if (data.session) {
+        state.user = { id: data.session.user.id, email: data.session.user.email };
+        state.isLocalMode = false;
+        debugLog('Session restored for: ' + state.user.email);
+        return true;
+      }
+    } catch (e) {
+      debugLog('Failed to restore session: ' + e.message);
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+    return false;
+  }
+
+  // ===== Debug Helper =====
+  function debugLog(msg) {
+    console.log('[SurvivalFi]', msg);
+    // Also show on page for debugging
+    const debugDiv = document.getElementById('debug-output');
+    if (debugDiv) {
+      debugDiv.innerHTML += '<div style="font-size:12px;color:#888;">' + msg + '</div>';
+    }
+  }
+
   // ===== Initialization =====
   async function init() {
+    debugLog('Initializing...');
+
+    // EARLY CHECK: Look for OAuth code BEFORE anything else
+    const urlParams = new URLSearchParams(window.location.search);
+    const authCode = urlParams.get('code');
+    const hasCode = !!authCode;
+    debugLog('Has auth code: ' + hasCode + (hasCode ? ' (' + authCode.substring(0,8) + '...)' : ''));
+
     await loadFromStorage();
-    await checkAuthSession();
+    debugLog('Storage loaded. User: ' + (state.user?.email || 'none'));
+
+    // STEP 1: Handle OAuth callback (PKCE code in URL)
+    if (authCode && !state.user) {
+      debugLog('PKCE: Processing authorization code...');
+
+      // Show loading state on auth screen
+      const authScreen = document.getElementById('auth-screen');
+      if (authScreen) {
+        authScreen.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;"><h2>Signing you in...</h2><p>Please wait while we complete authentication.</p></div>';
+      }
+
+      const codeVerifier = getPkceVerifier();
+      debugLog('PKCE verifier found: ' + !!codeVerifier);
+
+      if (codeVerifier) {
+        try {
+          debugLog('PKCE: Attempting manual token exchange...');
+          const result = await manualExchangeCodeForSession(authCode, codeVerifier);
+          if (result && result.session) {
+            state.user = { id: result.user.id, email: result.user.email };
+            state.isLocalMode = false;
+            storeSession(result.session);
+            clearPkceVerifier();
+            window.history.replaceState(null, '', window.location.pathname);
+            debugLog('PKCE: Session established!');
+          } else {
+            debugLog('PKCE: Manual exchange returned no session');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        } catch (err) {
+          debugLog('PKCE manual exchange failed: ' + err.message);
+          console.error(err);
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      } else {
+        debugLog('PKCE: No verifier found, trying built-in exchange...');
+        try {
+          const { data, error } = await supabaseClient.auth.exchangeCodeForSession(authCode);
+          if (error) throw error;
+          if (data && data.session) {
+            state.user = { id: data.session.user.id, email: data.session.user.email };
+            state.isLocalMode = false;
+            storeSession(data.session);
+            window.history.replaceState(null, '', window.location.pathname);
+            debugLog('PKCE: Session established via built-in exchange');
+          } else {
+            debugLog('PKCE: Built-in exchange returned no session');
+            window.history.replaceState(null, '', window.location.pathname);
+          }
+        } catch (err2) {
+          debugLog('PKCE built-in exchange failed: ' + err2.message);
+          console.error(err2);
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      }
+    }
+
+    // STEP 2: Try restoring session from localStorage
+    if (!state.user) {
+      debugLog('Trying to restore session from localStorage...');
+      const restored = await restoreSession();
+      debugLog('Session restored: ' + restored);
+      if (restored) {
+        await syncFromSupabase();
+      }
+    }
+
+    // STEP 3: Try normal session check
+    if (!state.user) {
+      debugLog('Checking existing Supabase session...');
+      await checkAuthSession();
+      debugLog('After checkAuthSession, user: ' + (state.user?.email || 'none'));
+    }
+
+    // STEP 4: Hash token fallback
+    if (!state.user && !state.isLocalMode && window.location.hash.includes('access_token')) {
+      debugLog('Trying hash token fallback...');
+      await recoverSessionFromHash();
+    }
+
+    debugLog('Loading categories...');
     await loadCategoriesFromSupabase();
+
+    debugLog('Setting up UI...');
     setupAuth();
     setupNavigation();
     setupMobileMenu();
@@ -66,8 +359,13 @@ import { supabaseClient } from './supabase.js';
     setupCategoryFiltering();
 
     if (state.user || state.isLocalMode) {
+      debugLog('Showing app for user: ' + (state.user?.email || 'Local User'));
       showApp();
+    } else {
+      debugLog('No user, showing auth screen');
     }
+
+    debugLog('Init complete.');
   }
 
   // ===== Auth Session Check =====
@@ -88,6 +386,47 @@ import { supabaseClient } from './supabase.js';
     }
   }
 
+  // ===== FALLBACK: Recover session from URL hash tokens =====
+  async function recoverSessionFromHash() {
+    const hash = window.location.hash;
+    if (!hash || hash.length < 2) return false;
+
+    const params = new URLSearchParams(hash.substring(1));
+    const accessToken = params.get('access_token');
+    const refreshToken = params.get('refresh_token');
+
+    if (!accessToken) return false;
+
+    console.log('Recovering session from URL hash tokens (implicit grant fallback)');
+
+    try {
+      const { data, error } = await supabaseClient.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken || '',
+      });
+
+      if (error) throw error;
+
+      if (data.session) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+
+        state.user = { id: data.session.user.id, email: data.session.user.email };
+        state.isLocalMode = false;
+        storeSession(data.session);
+        await syncFromSupabase();
+        saveToStorage();
+        showApp();
+        showToast('Signed in successfully!', 'success');
+        return true;
+      }
+    } catch (err) {
+      console.error('Hash session recovery failed:', err);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      showToast('Sign-in failed. Please try again.', 'error');
+    }
+    return false;
+  }
+
   // ===== Categories from Supabase =====
   async function loadCategoriesFromSupabase() {
     try {
@@ -106,12 +445,26 @@ import { supabaseClient } from './supabase.js';
   function getCategoryConfig(key) {
     const supa = state.supabaseCategories.find(c => c.key === key);
     if (supa) {
+      let subtypes = null;
+      if (supa.expense_subtype) {
+        try {
+          subtypes = JSON.parse(supa.expense_subtype);
+        } catch (e) {
+          if (typeof supa.expense_subtype === 'string') {
+            subtypes = supa.expense_subtype.split(',').map(s => s.trim());
+          } else if (Array.isArray(supa.expense_subtype)) {
+            subtypes = supa.expense_subtype;
+          } else {
+            subtypes = [];
+          }
+        }
+      }
       return {
         emoji: supa.emoji,
         label: supa.label,
         color: supa.color,
         type: supa.type,
-        expenseSubtype: supa.expense_subtype ? JSON.parse(supa.expense_subtype) : null,
+        expenseSubtype: subtypes,
       };
     }
     return CATEGORIES[key] || CATEGORIES.other;
@@ -155,7 +508,7 @@ import { supabaseClient } from './supabase.js';
       const [txRes, notifRes, settingsRes] = await Promise.all([
         supabaseClient.from('transactions').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }),
         supabaseClient.from('notifications').select('*').eq('user_id', state.user.id).order('timestamp', { ascending: false }),
-        supabaseClient.from('settings').select('*').eq('user_id', state.user.id).single(),
+        supabaseClient.from('settings').select('*').eq('user_id', state.user.id).maybeSingle(),
       ]);
 
       if (txRes.data) {
@@ -188,7 +541,7 @@ import { supabaseClient } from './supabase.js';
         state.notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       }
 
-      if (settingsRes.data) {
+      if (settingsRes.data && !settingsRes.error) {
         state.settings = {
           survivalThreshold: settingsRes.data.survival_threshold ?? state.settings.survivalThreshold,
           impulsiveThreshold: settingsRes.data.impulsive_threshold ?? state.settings.impulsiveThreshold,
@@ -301,26 +654,70 @@ import { supabaseClient } from './supabase.js';
       }
     });
 
+    // ===== Google OAuth with manual PKCE =====
     $('#oauth-google').addEventListener('click', async () => {
       try {
-        const { error } = await supabaseClient.auth.signInWithOAuth({
+        debugLog('Starting Google OAuth with manual PKCE...');
+
+        // Generate PKCE pair manually
+        const codeVerifier = generateCodeVerifier();
+        const codeChallenge = await generateCodeChallenge(codeVerifier);
+        storePkceVerifier(codeVerifier);
+
+        debugLog('PKCE pair generated, getting OAuth URL from Supabase...');
+
+        // Use Supabase's signInWithOAuth but with our PKCE
+        const { data, error } = await supabaseClient.auth.signInWithOAuth({
           provider: 'google',
-          options: { redirectTo: window.location.origin },
+          options: { 
+            redirectTo: 'https://survivalfi.moriowada.com',
+            skipBrowserRedirect: true,
+          },
         });
-        if (error) throw error;
+
+        if (error) {
+          debugLog('signInWithOAuth error: ' + error.message);
+          throw error;
+        }
+
+        if (data?.url) {
+          debugLog('Got OAuth URL from Supabase, appending PKCE challenge...');
+          // Append our PKCE code challenge to the URL
+          const url = new URL(data.url);
+          url.searchParams.set('code_challenge', codeChallenge);
+          url.searchParams.set('code_challenge_method', 'S256');
+          debugLog('Redirecting to: ' + url.hostname + '...');
+          window.location.href = url.toString();
+        } else {
+          debugLog('No OAuth URL returned from Supabase');
+          showToast('Failed to get OAuth URL', 'error');
+        }
       } catch (err) {
+        debugLog('Google sign-in error: ' + err.message);
+        console.error('Google sign-in error:', err);
         showToast(err.message || 'Google sign-in failed', 'error');
       }
     });
 
+    // ===== GitHub OAuth =====
     $('#oauth-github').addEventListener('click', async () => {
       try {
-        const { error } = await supabaseClient.auth.signInWithOAuth({
+        console.log('Starting GitHub OAuth...');
+
+        const { data, error } = await supabaseClient.auth.signInWithOAuth({
           provider: 'github',
-          options: { redirectTo: window.location.origin },
+          options: { 
+            redirectTo: 'https://survivalfi.moriowada.com',
+          },
         });
+
         if (error) throw error;
+
+        if (data?.url) {
+          window.location.href = data.url;
+        }
       } catch (err) {
+        console.error('GitHub sign-in error:', err);
         showToast(err.message || 'GitHub sign-in failed', 'error');
       }
     });
@@ -330,22 +727,29 @@ import { supabaseClient } from './supabase.js';
       state.user = null;
       saveToStorage();
       showApp();
-      showToast('Using local mode — data stays on this device', 'info');
+      showToast('Using local mode - data stays on this device', 'info');
     });
 
+    // ===== Auth State Change Listener =====
     supabaseClient.auth.onAuthStateChange(async (event, session) => {
+      console.log('Auth state changed:', event, session?.user?.email);
+
       if (event === 'SIGNED_IN' && session?.user) {
         state.user = { id: session.user.id, email: session.user.email };
         state.isLocalMode = false;
+        storeSession(session);
         await uploadLocalDataToSupabase();
         await syncFromSupabase();
         saveToStorage();
-        showApp();
+        if (!$('#app-screen').classList.contains('active')) {
+          showApp();
+        }
         showToast('Signed in successfully!', 'success');
       }
       if (event === 'SIGNED_OUT') {
         state.user = null;
         state.isLocalMode = false;
+        localStorage.removeItem(SESSION_STORAGE_KEY);
         saveToStorage();
         $('#app-screen').classList.remove('active');
         $('#auth-screen').classList.add('active');
@@ -457,6 +861,7 @@ import { supabaseClient } from './supabase.js';
       }
       state.user = null;
       state.isLocalMode = false;
+      localStorage.removeItem(SESSION_STORAGE_KEY);
       saveToStorage();
       $('#app-screen').classList.remove('active');
       $('#auth-screen').classList.add('active');
@@ -893,9 +1298,9 @@ import { supabaseClient } from './supabase.js';
 
     let status, statusColor;
     if (score >= 70) { status = 'Financially Healthy'; statusColor = 'var(--green)'; }
-    else if (score >= 50) { status = 'Moderate — Stay Cautious'; statusColor = 'var(--text-primary)'; }
-    else if (score >= 30) { status = 'At Risk — Tighten Budget'; statusColor = 'var(--orange)'; }
-    else { status = 'Critical — Immediate Action Needed'; statusColor = 'var(--red)'; }
+    else if (score >= 50) { status = 'Moderate - Stay Cautious'; statusColor = 'var(--text-primary)'; }
+    else if (score >= 30) { status = 'At Risk - Tighten Budget'; statusColor = 'var(--orange)'; }
+    else { status = 'Critical - Immediate Action Needed'; statusColor = 'var(--red)'; }
 
     const statusEl = $('#survival-status');
     statusEl.textContent = status;
@@ -1019,7 +1424,7 @@ import { supabaseClient } from './supabase.js';
       <div class="impulsive-item ${a.levelClass}">
         <div class="impulsive-info">
           <div class="impulsive-cat">${a.info.emoji} ${a.info.label}</div>
-          <div class="impulsive-detail">${formatCurrency(a.total)} spent — ${a.level}</div>
+          <div class="impulsive-detail">${formatCurrency(a.total)} spent - ${a.level}</div>
         </div>
         <span class="impulsive-pct ${a.pctClass}">${a.pct.toFixed(1)}%</span>
       </div>
@@ -1063,7 +1468,7 @@ import { supabaseClient } from './supabase.js';
     if (score <= threshold) {
       addNotification({
         type: 'danger',
-        text: `Your survival score is ${score}% — below your ${threshold}% threshold. Review your spending immediately!`,
+        text: `Your survival score is ${score}% - below your ${threshold}% threshold. Review your spending immediately!`,
         timestamp: new Date().toISOString(),
       });
     }
@@ -1079,7 +1484,7 @@ import { supabaseClient } from './supabase.js';
           const info = getCategoryConfig(cat);
           addNotification({
             type: 'warning',
-            text: `${info.emoji} ${info.label} spending is at ${pct.toFixed(1)}% of income — exceeding your ${state.settings.impulsiveThreshold}% threshold.`,
+            text: `${info.emoji} ${info.label} spending is at ${pct.toFixed(1)}% of income - exceeding your ${state.settings.impulsiveThreshold}% threshold.`,
             timestamp: new Date().toISOString(),
           });
         }
@@ -1229,6 +1634,24 @@ import { supabaseClient } from './supabase.js';
     updateTxCategories();
   }
 
+  function parseExpenseSubtype(cat) {
+    let subtypes = [];
+    if (cat.expense_subtype) {
+      try {
+        subtypes = JSON.parse(cat.expense_subtype);
+      } catch (e) {
+        if (typeof cat.expense_subtype === 'string') {
+          subtypes = cat.expense_subtype.split(',').map(s => s.trim());
+        } else if (Array.isArray(cat.expense_subtype)) {
+          subtypes = cat.expense_subtype;
+        } else {
+          subtypes = [];
+        }
+      }
+    }
+    return subtypes;
+  }
+
   function updateQaCategories() {
     const type = $('#qa-type').value;
     const expenseType = $('#qa-expense-type').value;
@@ -1238,7 +1661,8 @@ import { supabaseClient } from './supabase.js';
     if (state.supabaseCategories.length > 0) {
       state.supabaseCategories.forEach(cat => {
         const catType = cat.type;
-        const subtypes = cat.expense_subtype ? JSON.parse(cat.expense_subtype) : [];
+        const subtypes = parseExpenseSubtype(cat);
+
         if (type === 'income' && (catType === 'income' || catType === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
@@ -1269,7 +1693,8 @@ import { supabaseClient } from './supabase.js';
     if (state.supabaseCategories.length > 0) {
       state.supabaseCategories.forEach(cat => {
         const catType = cat.type;
-        const subtypes = cat.expense_subtype ? JSON.parse(cat.expense_subtype) : [];
+        const subtypes = parseExpenseSubtype(cat);
+
         if (type === 'income' && (catType === 'income' || catType === 'both')) {
           select.add(new Option(cat.emoji + ' ' + cat.label, cat.key));
         } else if (type === 'expense' && (catType === 'expense' || catType === 'both')) {
@@ -1386,7 +1811,7 @@ import { supabaseClient } from './supabase.js';
 
   function formatCurrency(amount) {
     const sign = amount < 0 ? '-' : '';
-    return sign + 'Rp' + Math.abs(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return sign + '$' + Math.abs(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
   function formatDateTime(dateStr) {
@@ -1413,5 +1838,17 @@ import { supabaseClient } from './supabase.js';
   }
 
   // ===== Boot =====
-  init().catch(err => console.error('Init failed:', err));
+  (async function() {
+    try {
+      await init();
+    } catch (err) {
+      console.error('Init failed:', err);
+      debugLog('INIT FAILED: ' + err.message);
+      // Show error on auth screen
+      const authScreen = document.getElementById('auth-screen');
+      if (authScreen) {
+        authScreen.innerHTML = '<div style="padding:2rem;text-align:center;"><h2>Application Error</h2><p>' + escapeHtml(err.message) + '</p><p>Check the console for details.</p><button onclick="location.reload()" style="margin-top:1rem;padding:0.5rem 1rem;">Reload</button></div>';
+      }
+    }
+  })();
 })();

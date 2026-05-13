@@ -9,13 +9,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <base target="_blank">
+<base target="_blank">
 </head>
 <body>
   <!-- Toast Notification Container -->
   <div id="toast-container"></div>
 
   <!-- Debug Output (visible with ?debug in URL) -->
-  <div id="debug-output" style="position:fixed;bottom:0;left:0;right:0;max-height:150px;overflow-y:auto;background:rgba(0,0,0,0.85);color:#0f0;font-family:monospace;font-size:11px;padding:8px;z-index:9998;display:none;"></div>
+  <div id="debug-output"></div>
 
   <!-- Auth Screen (component) -->
   <div id="slot-auth"></div>
@@ -36,17 +37,17 @@
         <div class="topbar-actions">
           <button id="theme-toggle" class="btn-icon" title="Toggle Theme">
             <svg id="theme-icon-dark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
-            <svg id="theme-icon-light" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg id="theme-icon-light" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           </button>
           <button id="notif-bell" class="btn-icon notif-btn" title="Notifications">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
-            <span class="notif-badge" id="notif-badge" style="display:none">0</span>
+            <span class="notif-badge" id="notif-badge">0</span>
           </button>
         </div>
       </div>
 
       <!-- Notification Panel -->
-      <div id="notif-panel" class="notif-panel" style="display:none">
+      <div id="notif-panel" class="notif-panel">
         <div class="notif-header">
           <h3>Notifications</h3>
           <button id="clear-notifs" class="btn-sm">Clear All</button>
@@ -80,7 +81,7 @@
     // Final fallback warning if all CDNs fail
     window.addEventListener('load', function() {
       if (typeof supabase === 'undefined') {
-        document.body.innerHTML = '<div style="padding:2rem;text-align:center;max-width:500px;margin:0 auto;"><h2>Supabase Library Blocked</h2><p>Your browsers tracking prevention is blocking the Supabase library.</p><p><strong>To fix:</strong></p><ul style="text-align:left;"><li>Disable tracking prevention for this site</li><li>Or use Chrome/Firefox</li><li>Or click "Continue without account" for local-only mode</li></ul></div>';
+        document.body.innerHTML = '<div class="supabase-error-fallback"><h2>Supabase Library Blocked</h2><p>Your browsers tracking prevention is blocking the Supabase library.</p><p><strong>To fix:</strong></p><ul class="supabase-error-list"><li>Disable tracking prevention for this site</li><li>Or use Chrome/Firefox</li><li>Or click "Continue without account" for local-only mode</li></ul></div>';
       }
     });
   </script>

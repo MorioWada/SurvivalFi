@@ -913,7 +913,14 @@ import { supabaseClient } from './supabase.js';
     $('#auth-screen').classList.remove('active');
     $('#app-screen').classList.add('active');
     $('#user-email').textContent = state.user?.email || 'Local User';
-    $('#user-avatar').textContent = (state.user?.email || 'L')[0].toUpperCase();
+    // Use profile picture from OAuth provider metadata if available
+    const avatarUrl = state.user?.user_metadata?.avatar_url || state.user?.user_metadata?.picture || null;
+    const avatarEl = $('#user-avatar');
+    if (avatarUrl) {
+      avatarEl.innerHTML = `<img src="${avatarUrl}" alt="avatar" onerror="this.textContent='${(state.user?.email || 'L')[0].toUpperCase()}'">`;
+    } else {
+      avatarEl.textContent = (state.user?.email || 'L')[0].toUpperCase();
+    }
     applySettingsToUI();
     refreshAll();
   }
@@ -952,6 +959,7 @@ import { supabaseClient } from './supabase.js';
         state.isLocalMode = false;
         localStorage.removeItem(SESSION_STORAGE_KEY);
         saveToStorage();
+        $('#user-avatar').innerHTML = '';
         $('#app-screen').classList.remove('active');
         $('#auth-screen').classList.add('active');
         showToast('Signed out', 'info');
@@ -1834,7 +1842,7 @@ import { supabaseClient } from './supabase.js';
 
   function formatCurrency(amount) {
     const sign = amount < 0 ? '-' : '';
-    return sign + '$' + Math.abs(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return 'Rp ' + sign + Math.abs(amount).toLocaleString('id-ID');
   }
 
   function formatDateTime(dateStr) {

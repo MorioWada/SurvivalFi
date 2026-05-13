@@ -481,7 +481,7 @@ select { cursor: pointer; }
   align-items: flex-end;
   min-width: 0;
 }
-.form-row .form-group { flex: 1; min-width: 0; }
+.form-row .form-group { flex: 1; min-width: 200px; }
 .flex-grow { flex: 1 !important; }
 
 /* ===== Toggle Group ===== */
@@ -525,6 +525,8 @@ select { cursor: pointer; }
 .btn-primary {
   background: var(--accent);
   color: #192335;
+  width: 100%;
+  justify-content: center;
 }
 .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
 .btn-outline {

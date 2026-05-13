@@ -7,7 +7,7 @@
       </div>
       <div class="stat-info">
         <span class="stat-label">Total Income</span>
-        <span class="stat-value" id="stat-income">$0.00</span>
+        <span class="stat-value" id="stat-income">Rp 0</span>
       </div>
     </div>
     <div class="stat-card">
@@ -16,7 +16,7 @@
       </div>
       <div class="stat-info">
         <span class="stat-label">Total Expenses</span>
-        <span class="stat-value" id="stat-expenses">$0.00</span>
+        <span class="stat-value" id="stat-expenses">Rp 0</span>
       </div>
     </div>
     <div class="stat-card">
@@ -25,7 +25,7 @@
       </div>
       <div class="stat-info">
         <span class="stat-label">Current Balance</span>
-        <span class="stat-value" id="stat-balance">$0.00</span>
+        <span class="stat-value" id="stat-balance">Rp 0</span>
       </div>
     </div>
     <div class="stat-card">
@@ -81,13 +81,16 @@
             <option value="fixed">Fixed</option>
           </select>
         </div>
-      </div>
-<div class="form-row quick-add-row">
          <div class="form-group flex-grow qa-desc-group">
            <label>Description</label>
            <input type="text" id="qa-desc" placeholder="e.g. Grocery shopping">
          </div>
-         <button type="submit" class="btn btn-primary">Add Transaction</button>
+         <div class="form-group qa-date-group">
+           <label>Date</label>
+           <input type="date" id="qa-date">
+         </div>
+
+        <button type="submit" class="btn btn-primary">Add Transaction</button>
        </div>
     </form>
   </div>

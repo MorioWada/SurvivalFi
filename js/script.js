@@ -220,7 +220,7 @@ import { supabaseClient } from './supabase.js';
       }
 
       if (data.session) {
-        state.user = { id: data.session.user.id, email: data.session.user.email };
+        state.user = { id: data.session.user.id, email: data.session.user.email, user_metadata: data.session.user.user_metadata };
         state.isLocalMode = false;
         debugLog('Session restored for: ' + state.user.email);
         return true;
@@ -292,7 +292,7 @@ import { supabaseClient } from './supabase.js';
           debugLog('PKCE: Manual token exchange...');
           const result = await manualExchangeCodeForSession(authCode, codeVerifier);
           if (result && result.session) {
-            state.user = { id: result.user.id, email: result.user.email };
+            state.user = { id: result.user.id, email: result.user.email, user_metadata: result.user.user_metadata };
             state.isLocalMode = false;
             storeSession(result.session);
             clearPkceVerifier();
@@ -323,7 +323,7 @@ import { supabaseClient } from './supabase.js';
           const { data, error } = await supabaseClient.auth.exchangeCodeForSession(authCode);
           if (error) throw error;
           if (data && data.session) {
-            state.user = { id: data.session.user.id, email: data.session.user.email };
+            state.user = { id: data.session.user.id, email: data.session.user.email, user_metadata: data.session.user.user_metadata };
             state.isLocalMode = false;
             storeSession(data.session);
             window.history.replaceState(null, '', window.location.pathname);
@@ -393,7 +393,7 @@ import { supabaseClient } from './supabase.js';
       const { data: { session }, error } = await supabaseClient.auth.getSession();
       if (error) throw error;
       if (session?.user) {
-        state.user = { id: session.user.id, email: session.user.email };
+        state.user = { id: session.user.id, email: session.user.email, user_metadata: session.user.user_metadata };
         state.isLocalMode = false;
         await syncFromSupabase();
       }
@@ -424,7 +424,7 @@ import { supabaseClient } from './supabase.js';
 
       if (data.session) {
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
-        state.user = { id: data.session.user.id, email: data.session.user.email };
+        state.user = { id: data.session.user.id, email: data.session.user.email, user_metadata: data.session.user.user_metadata };
         state.isLocalMode = false;
         storeSession(data.session);
         await syncFromSupabase();
@@ -651,7 +651,7 @@ import { supabaseClient } from './supabase.js';
         if (state.isRegistering) {
           result = await supabaseClient.auth.signUp({ email, password });
           if (result.error) throw result.error;
-          state.user = { id: result.data.user.id, email: result.data.user.email };
+          state.user = { id: result.data.user.id, email: result.data.user.email, user_metadata: result.data.user.user_metadata };
           state.isLocalMode = false;
           await uploadLocalDataToSupabase();
           await syncFromSupabase();
@@ -661,7 +661,7 @@ import { supabaseClient } from './supabase.js';
         } else {
           result = await supabaseClient.auth.signInWithPassword({ email, password });
           if (result.error) throw result.error;
-          state.user = { id: result.data.user.id, email: result.data.user.email };
+          state.user = { id: result.data.user.id, email: result.data.user.email, user_metadata: result.data.user.user_metadata };
           state.isLocalMode = false;
           await uploadLocalDataToSupabase();
           await syncFromSupabase();
@@ -765,14 +765,14 @@ import { supabaseClient } from './supabase.js';
         if (isProcessingOAuth) {
           debugLog('Skipping SIGNED_IN sync - OAuth already processed in init()');
           isProcessingOAuth = false;
-          state.user = { id: session.user.id, email: session.user.email };
+          state.user = { id: session.user.id, email: session.user.email, user_metadata: session.user.user_metadata };
           state.isLocalMode = false;
           storeSession(session);
           saveToStorage();
           if (!$('#app-screen').classList.contains('active')) showApp();
           return;
         }
-        state.user = { id: session.user.id, email: session.user.email };
+        state.user = { id: session.user.id, email: session.user.email, user_metadata: session.user.user_metadata };
         state.isLocalMode = false;
         storeSession(session);
         saveToStorage();
@@ -914,7 +914,14 @@ import { supabaseClient } from './supabase.js';
     $('#app-screen').classList.add('active');
     $('#user-email').textContent = state.user?.email || 'Local User';
     // Use profile picture from OAuth provider metadata if available
-    const avatarUrl = state.user?.user_metadata?.avatar_url || state.user?.user_metadata?.picture || null;
+    const meta = state.user?.user_metadata || {};
+    // Debug: log available metadata fields
+    console.log('[Avatar] user_metadata keys:', Object.keys(meta));
+    console.log('[Avatar] avatar_url:', meta.avatar_url);
+    console.log('[Avatar] picture:', meta.picture);
+    // Try multiple possible field names from different OAuth providers
+    const avatarUrl = meta.avatar_url || meta.picture || meta.avatar || null;
+    console.log('[Avatar] resolved URL:', avatarUrl);
     const avatarEl = $('#user-avatar');
     if (avatarUrl) {
       avatarEl.innerHTML = `<img src="${avatarUrl}" alt="avatar" onerror="this.textContent='${(state.user?.email || 'L')[0].toUpperCase()}'">`;
@@ -1013,6 +1020,9 @@ import { supabaseClient } from './supabase.js';
       return;
     }
 
+    // Set default date to today (user can change it)
+    $('#qa-date').value = new Date().toISOString().split('T')[0];
+
     typeSelect.addEventListener('change', () => {
       const isIncome = typeSelect.value === 'income';
       expenseTypeSelect.closest('.form-group').style.display = isIncome ? 'none' : '';
@@ -1035,6 +1045,7 @@ import { supabaseClient } from './supabase.js';
         category: $('#qa-category').value,
         expenseType: typeSelect.value === 'income' ? 'none' : $('#qa-expense-type').value,
         description: $('#qa-desc').value || getCategoryConfig($('#qa-category').value)?.label || 'Transaction',
+        date: $('#qa-date').value || undefined,
       });
 
       addTransaction(tx);
@@ -1042,6 +1053,8 @@ import { supabaseClient } from './supabase.js';
       typeSelect.value = 'expense';
       expenseTypeSelect.value = 'variable';
       expenseTypeSelect.closest('.form-group').style.display = '';
+      // Preserve the date the user selected, or default to today
+      $('#qa-date').value = new Date().toISOString().split('T')[0];
       updateQaCategories();
       showToast('Transaction added!', 'success');
     });

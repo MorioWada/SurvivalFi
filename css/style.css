@@ -473,6 +473,15 @@ input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(255,250,239,0.15);
 }
+
+/* Date picker icon color - white in dark mode */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+body.light-mode input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0);
+}
 select { cursor: pointer; }
 
 .form-row {
@@ -554,6 +563,16 @@ select { cursor: pointer; }
   transition: var(--transition);
 }
 .btn-sm:hover { background: rgba(255,250,239,0.2); }
+
+/* Light mode: Clear All button needs dark colors for visibility */
+body.light-mode .btn-sm {
+  background: rgba(25, 35, 53, 0.1);
+  color: #192335;
+}
+body.light-mode .btn-sm:hover {
+  background: rgba(25, 35, 53, 0.18);
+  color: #192335;
+}
 .btn-icon {
   background: transparent;
   border: none;

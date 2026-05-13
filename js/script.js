@@ -29,6 +29,7 @@ import { supabaseClient } from './supabase.js';
     user: null,
     transactions: [],
     notifications: [],
+    dismissedNotifs: [], // Track cleared/dismissed notification signatures to prevent regeneration
     settings: {
       survivalThreshold: 20,
       impulsiveThreshold: 10,
@@ -483,6 +484,7 @@ import { supabaseClient } from './supabase.js';
         state.user = data.user || null;
         state.transactions = data.transactions || [];
         state.notifications = data.notifications || [];
+        state.dismissedNotifs = data.dismissedNotifs || [];
         state.settings = { ...state.settings, ...data.settings };
         state.isLocalMode = data.isLocalMode || false;
       }
@@ -497,6 +499,7 @@ import { supabaseClient } from './supabase.js';
         user: state.user,
         transactions: state.transactions,
         notifications: state.notifications,
+        dismissedNotifs: state.dismissedNotifs,
         settings: state.settings,
         isLocalMode: state.isLocalMode,
       }));
@@ -538,9 +541,8 @@ import { supabaseClient } from './supabase.js';
           date: t.date,
           createdAt: t.created_at,
         }));
-        const localIds = new Set(state.transactions.map(t => t.id));
-        const newFromSupa = supaTx.filter(t => !localIds.has(t.id));
-        state.transactions = [...state.transactions, ...newFromSupa];
+        // For signed-in users, REPLACE with Supabase data (source of truth)
+        state.transactions = supaTx;
         state.transactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
       }
 
@@ -551,9 +553,9 @@ import { supabaseClient } from './supabase.js';
           text: n.text,
           timestamp: n.timestamp,
         }));
-        const localIds = new Set(state.notifications.map(n => n.id));
-        const newFromSupa = supaNotif.filter(n => !localIds.has(n.id));
-        state.notifications = [...state.notifications, ...newFromSupa];
+        // For signed-in users, REPLACE local notifications with Supabase state
+        // This ensures cleared notifications stay cleared after sync
+        state.notifications = supaNotif;
         state.notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
       }
 
@@ -964,6 +966,8 @@ import { supabaseClient } from './supabase.js';
         if (state.user) await supabaseClient.auth.signOut().catch(() => {});
         state.user = null;
         state.isLocalMode = false;
+        state.notifications = [];
+        state.dismissedNotifs = []; // Clear dismissed tracking on logout
         localStorage.removeItem(SESSION_STORAGE_KEY);
         saveToStorage();
         $('#user-avatar').innerHTML = '';
@@ -1494,11 +1498,33 @@ import { supabaseClient } from './supabase.js';
       panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
     });
 
-    $('#clear-notifs').addEventListener('click', () => {
+    $('#clear-notifs').addEventListener('click', async () => {
+      // Track all current notifications as dismissed so they don't regenerate
+      const now = new Date().toISOString();
+      state.notifications.forEach(n => {
+        state.dismissedNotifs.push({ text: n.text, clearedAt: now });
+      });
+      // Keep only last 50 dismissed entries to prevent memory bloat
+      if (state.dismissedNotifs.length > 50) {
+        state.dismissedNotifs = state.dismissedNotifs.slice(-50);
+      }
+      // Delete notifications from Supabase for signed-in users
+      if (state.user?.id && !state.isLocalMode) {
+        try {
+          const { error } = await supabaseClient.from('notifications').delete().eq('user_id', state.user.id);
+          if (error) throw error;
+          debugLog('Notifications cleared from Supabase');
+        } catch (err) {
+          debugLog('Failed to clear Supabase notifications: ' + err.message);
+          showToast('Failed to clear notifications from server', 'error');
+          return; // Don't clear local state if server delete failed
+        }
+      }
       state.notifications = [];
       saveToStorage();
       renderNotifications();
       updateNotifBadge();
+      showToast('Notifications cleared', 'success');
     });
 
     document.addEventListener('click', (e) => {
@@ -1566,7 +1592,9 @@ import { supabaseClient } from './supabase.js';
   function addNotification(notif) {
     const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
     const exists = state.notifications.some(n => n.text === notif.text && n.timestamp > oneDayAgo);
-    if (!exists) {
+    // Skip if this notification was previously dismissed/cleared by the user
+    const wasDismissed = state.dismissedNotifs.some(d => d.text === notif.text && d.clearedAt > oneDayAgo);
+    if (!exists && !wasDismissed) {
       const newNotif = { ...notif, id: crypto.randomUUID ? crypto.randomUUID() : 'n_' + Date.now() };
       state.notifications.unshift(newNotif);
       syncNotificationToSupabase(newNotif).catch(() => {});

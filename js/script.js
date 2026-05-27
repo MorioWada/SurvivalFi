@@ -543,7 +543,7 @@ import { supabaseClient } from './supabase.js';
         }));
         // For signed-in users, REPLACE with Supabase data (source of truth)
         state.transactions = supaTx;
-        state.transactions.sort((a, b) => new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date));
+        state.transactions.sort((a, b) => new Date(b.createdAt || b.date + 'T00:00:00') - new Date(a.createdAt || a.date + 'T00:00:00'));
       }
 
       if (notifRes.data) {
@@ -1025,7 +1025,7 @@ import { supabaseClient } from './supabase.js';
     }
 
     // Set default date to today (user can change it)
-    $('#qa-date').value = new Date().toISOString().split('T')[0];
+    $('#qa-date').value = getLocalDateString();
 
     typeSelect.addEventListener('change', () => {
       const isIncome = typeSelect.value === 'income';
@@ -1058,7 +1058,7 @@ import { supabaseClient } from './supabase.js';
       expenseTypeSelect.value = 'variable';
       expenseTypeSelect.closest('.form-group').style.display = '';
       // Preserve the date the user selected, or default to today
-      $('#qa-date').value = new Date().toISOString().split('T')[0];
+      $('#qa-date').value = getLocalDateString();
       updateQaCategories();
       showToast('Transaction added!', 'success');
     });
@@ -1092,7 +1092,7 @@ import { supabaseClient } from './supabase.js';
       });
     });
 
-    $('#tx-date').value = new Date().toISOString().split('T')[0];
+    $('#tx-date').value = getLocalDateString();
 
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -1114,7 +1114,7 @@ import { supabaseClient } from './supabase.js';
       addTransaction(tx);
       closeModal();
       form.reset();
-      $('#tx-date').value = new Date().toISOString().split('T')[0];
+      $('#tx-date').value = getLocalDateString();
       updateTxCategories();
       showToast('Transaction added!', 'success');
     });
@@ -1122,6 +1122,8 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Transaction CRUD =====
   function createTransaction({ type, amount, category, expenseType, description, date }) {
+    // Use selected date if provided, otherwise default to today (local timezone)
+    const txDate = date || getLocalDateString();
     return {
       id: crypto.randomUUID ? crypto.randomUUID() : 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
       type,
@@ -1129,9 +1131,25 @@ import { supabaseClient } from './supabase.js';
       category,
       expenseType: type === 'income' ? 'none' : expenseType,
       description,
-      date: date || new Date().toISOString().split('T')[0],
+      date: txDate,
       createdAt: new Date().toISOString(),
     };
+  }
+
+  // Helper: get today's date as YYYY-MM-DD in local timezone
+  function getLocalDateString(d) {
+    const date = d || new Date();
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  // Helper: parse a YYYY-MM-DD string as local date (avoids UTC shift issues)
+  function parseLocalDate(dateStr) {
+    if (!dateStr) return new Date();
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d);
   }
 
   function addTransaction(tx) {
@@ -1176,7 +1194,7 @@ import { supabaseClient } from './supabase.js';
     const currentYear = date.getFullYear();
 
     const monthTx = state.transactions.filter(t => {
-      const d = new Date(t.date);
+      const d = parseLocalDate(t.date);
       return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
     });
 
@@ -1205,10 +1223,39 @@ import { supabaseClient } from './supabase.js';
     const container = $('#all-transactions');
     const typeFilter = $('#filter-type').value;
     const catFilter = $('#filter-category').value;
+    const sortBy = $('#filter-sort-by').value;
+    const sortOrder = $('#filter-sort-order').value;
+    const dateFrom = $('#filter-date-from').value;
+    const dateTo = $('#filter-date-to').value;
 
     let filtered = [...state.transactions];
     if (typeFilter !== 'all') filtered = filtered.filter(t => t.type === typeFilter);
     if (catFilter !== 'all') filtered = filtered.filter(t => t.category === catFilter);
+
+    // Date range filter
+    if (dateFrom) {
+      const fromDate = parseLocalDate(dateFrom);
+      filtered = filtered.filter(t => parseLocalDate(t.date) >= fromDate);
+    }
+    if (dateTo) {
+      const toDate = parseLocalDate(dateTo);
+      // Include the entire end day
+      toDate.setHours(23, 59, 59, 999);
+      filtered = filtered.filter(t => parseLocalDate(t.date) <= toDate);
+    }
+
+    // Sorting
+    filtered.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'date') {
+        const da = parseLocalDate(a.date).getTime();
+        const db = parseLocalDate(b.date).getTime();
+        cmp = da - db;
+      } else if (sortBy === 'amount') {
+        cmp = a.amount - b.amount;
+      }
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
 
     if (filtered.length === 0) {
       container.innerHTML = '<p class="empty-state">No transactions match the filters.</p>';
@@ -1688,6 +1735,12 @@ import { supabaseClient } from './supabase.js';
   function setupFilters() {
     const filterType = $('#filter-type');
     const filterCategory = $('#filter-category');
+    const filterSortBy = $('#filter-sort-by');
+    const filterSortOrder = $('#filter-sort-order');
+    const filterDateFrom = $('#filter-date-from');
+    const filterDateTo = $('#filter-date-to');
+    const filterDateClear = $('#filter-date-clear');
+
     if (!filterType || !filterCategory) {
       debugLog('Filter elements not ready, deferring...');
       setTimeout(setupFilters, 500);
@@ -1695,6 +1748,17 @@ import { supabaseClient } from './supabase.js';
     }
     filterType.addEventListener('change', renderAllTransactions);
     filterCategory.addEventListener('change', renderAllTransactions);
+    if (filterSortBy) filterSortBy.addEventListener('change', renderAllTransactions);
+    if (filterSortOrder) filterSortOrder.addEventListener('change', renderAllTransactions);
+    if (filterDateFrom) filterDateFrom.addEventListener('change', renderAllTransactions);
+    if (filterDateTo) filterDateTo.addEventListener('change', renderAllTransactions);
+    if (filterDateClear) {
+      filterDateClear.addEventListener('click', () => {
+        if (filterDateFrom) filterDateFrom.value = '';
+        if (filterDateTo) filterDateTo.value = '';
+        renderAllTransactions();
+      });
+    }
   }
 
   // ===== Theme Toggle =====

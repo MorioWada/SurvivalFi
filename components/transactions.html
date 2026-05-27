@@ -24,6 +24,17 @@
           <option value="investment">📈 Investment</option>
           <option value="other">📦 Other</option>
         </select>
+        <select id="filter-sort-by">
+          <option value="date">Sort by Date</option>
+          <option value="amount">Sort by Amount</option>
+        </select>
+        <select id="filter-sort-order">
+          <option value="desc">Descending</option>
+          <option value="asc">Ascending</option>
+        </select>
+        <input type="date" id="filter-date-from" placeholder="From date">
+        <input type="date" id="filter-date-to" placeholder="To date">
+        <button id="filter-date-clear" class="btn-sm">Clear Dates</button>
       </div>
     </div>
     <div class="transactions-list" id="all-transactions">

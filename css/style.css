@@ -1261,3 +1261,22 @@ body.light-mode .empty-state { color: #9ca3af; }
 /* Transaction Amount & Icon - darker green for light backgrounds */
 body.light-mode .tx-amount.income { color: #16a34a; }
 body.light-mode .tx-icon.income { background: rgba(74,222,128,0.18); }
+
+/* ===== Transaction Filter Enhancements ===== */
+.header-filters input[type="date"] {
+  padding: 0.4rem 0.65rem;
+  font-size: 0.82rem;
+  width: auto;
+  min-width: 130px;
+}
+
+.header-filters #filter-sort-by,
+.header-filters #filter-sort-order {
+  min-width: 140px;
+}
+
+/* ===== Light Mode Filter Fixes ===== */
+body.light-mode .header-filters input[type="date"] {
+  color: #192335;
+  border-color: #e0d8cc;
+}

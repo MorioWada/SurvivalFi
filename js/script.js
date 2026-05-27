@@ -304,7 +304,7 @@ import { supabaseClient } from './supabase.js';
             await new Promise(r => setTimeout(r, 100));
 
             debugLog('Uploading local data...');
-            await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+            // Upload disabled - fetching from Supabase only
             debugLog('Syncing from Supabase...');
             await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
             debugLog('Data sync complete');
@@ -334,7 +334,7 @@ import { supabaseClient } from './supabase.js';
             await new Promise(r => setTimeout(r, 100));
 
             debugLog('Uploading local data...');
-            await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+            // Upload disabled - fetching from Supabase only
             debugLog('Syncing from Supabase...');
             await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
             debugLog('Data sync complete');
@@ -583,26 +583,10 @@ import { supabaseClient } from './supabase.js';
 
   // ===== Upload local data =====
   async function uploadLocalDataToSupabase() {
-    if (!state.user?.id) {
-      debugLog('Skip upload: no user id');
-      return;
-    }
-    const unsynced = state.transactions.filter(tx => !tx._synced);
-    debugLog('Uploading ' + unsynced.length + ' of ' + state.transactions.length + ' transactions...');
-    if (unsynced.length === 0) {
-      debugLog('All transactions already synced');
-      await syncSettingsToSupabase().catch(e => debugLog('Settings sync error: ' + e.message));
-      return;
-    }
-    try {
-      for (const tx of unsynced) {
-        await syncTransactionToSupabase(tx);
-      }
-      await syncSettingsToSupabase();
-      debugLog('Upload complete');
-    } catch (err) {
-      debugLog('Upload failed: ' + err.message);
-    }
+    // DISABLED: Never sync local data to Supabase per user requirement.
+    // All data must originate from Supabase for signed-in users.
+    debugLog('Upload local data skipped (disabled by policy)');
+    return;
   }
 
   // ===== Toast =====
@@ -655,7 +639,7 @@ import { supabaseClient } from './supabase.js';
           if (result.error) throw result.error;
           state.user = { id: result.data.user.id, email: result.data.user.email, user_metadata: result.data.user.user_metadata };
           state.isLocalMode = false;
-          await uploadLocalDataToSupabase();
+          // Upload disabled - fetching from Supabase only
           await syncFromSupabase();
           saveToStorage();
           showApp();
@@ -665,7 +649,7 @@ import { supabaseClient } from './supabase.js';
           if (result.error) throw result.error;
           state.user = { id: result.data.user.id, email: result.data.user.email, user_metadata: result.data.user.user_metadata };
           state.isLocalMode = false;
-          await uploadLocalDataToSupabase();
+          // Upload disabled - fetching from Supabase only
           await syncFromSupabase();
           saveToStorage();
           showApp();
@@ -778,7 +762,7 @@ import { supabaseClient } from './supabase.js';
         state.isLocalMode = false;
         storeSession(session);
         saveToStorage();
-        await uploadLocalDataToSupabase().catch(e => debugLog('Upload error: ' + e.message));
+        // Upload disabled - fetching from Supabase only
         await syncFromSupabase().catch(e => debugLog('Sync error: ' + e.message));
         if (!$('#app-screen').classList.contains('active')) showApp();
         showToast('Signed in successfully!', 'success');
@@ -846,11 +830,11 @@ import { supabaseClient } from './supabase.js';
 
   // FIXED: Uses notification_id and maps type to valid constraint values
   async function syncNotificationToSupabase(notif) {
-    if (!state.user?.id || state.isLocalMode) return;
+    if (!state.user?.id || state.isLocalMode) return false;
     try {
       const dbType = mapNotificationType(notif.type);
 
-      const { error } = await supabaseClient.from('notifications').upsert({
+      const { data, error } = await supabaseClient.from('notifications').upsert({
         notification_id: notif.id,
         user_id: state.user.id,
         type: dbType,
@@ -862,7 +846,7 @@ import { supabaseClient } from './supabase.js';
         debugLog('Notification sync error: ' + error.message);
         // If constraint still fails, try with 'info' as ultimate fallback
         if (error.message.includes('check constraint')) {
-          const { error: fallbackError } = await supabaseClient.from('notifications').upsert({
+          const { data: fbData, error: fallbackError } = await supabaseClient.from('notifications').upsert({
             notification_id: notif.id,
             user_id: state.user.id,
             type: 'info',
@@ -871,22 +855,50 @@ import { supabaseClient } from './supabase.js';
           }, { onConflict: 'notification_id' }).select();
           if (fallbackError) {
             console.warn('Fallback also failed:', fallbackError.message);
-          } else {
-            debugLog('Notification synced with fallback type');
+            return false;
           }
+          // Verify fallback insert
+          const { data: verifyData, error: verifyError } = await supabaseClient
+            .from('notifications')
+            .select('*')
+            .eq('notification_id', notif.id)
+            .eq('user_id', state.user.id)
+            .single();
+          if (verifyError || !verifyData) {
+            debugLog('Notification verification failed after fallback');
+            return false;
+          }
+          debugLog('Notification synced with fallback type');
+          return true;
         }
-      } else {
-        debugLog('Notification synced: ' + notif.id);
+        return false;
       }
+
+      // Verify the upsert
+      const { data: verifyData, error: verifyError } = await supabaseClient
+        .from('notifications')
+        .select('*')
+        .eq('notification_id', notif.id)
+        .eq('user_id', state.user.id)
+        .single();
+
+      if (verifyError || !verifyData) {
+        debugLog('Notification verification failed');
+        return false;
+      }
+
+      debugLog('Notification synced and verified: ' + notif.id);
+      return true;
     } catch (err) {
       console.warn('Sync notification failed:', err);
+      return false;
     }
   }
 
   async function syncSettingsToSupabase() {
     if (!state.user?.id || state.isLocalMode) {
       debugLog('Skip settings sync');
-      return;
+      return false;
     }
     debugLog('Syncing settings...');
     try {
@@ -904,14 +916,44 @@ import { supabaseClient } from './supabase.js';
         debugLog('Settings sync error: ' + error.message);
         throw error;
       }
-      debugLog('Settings synced');
+
+      // Verify the upsert
+      const { data: verifyData, error: verifyError } = await supabaseClient
+        .from('settings')
+        .select('*')
+        .eq('user_id', state.user.id)
+        .single();
+
+      if (verifyError || !verifyData) {
+        debugLog('Settings verification failed');
+        return false;
+      }
+
+      // Verify key values match
+      const verified = (
+        verifyData.survival_threshold === state.settings.survivalThreshold &&
+        verifyData.impulsive_threshold === state.settings.impulsiveThreshold &&
+        parseFloat(verifyData.monthly_income) === state.settings.monthlyIncome &&
+        parseFloat(verifyData.monthly_fixed) === state.settings.monthlyFixed &&
+        parseFloat(verifyData.monthly_budget) === state.settings.monthlyBudget &&
+        verifyData.theme === state.settings.theme
+      );
+
+      if (!verified) {
+        debugLog('Settings verification failed - values mismatch');
+        return false;
+      }
+
+      debugLog('Settings synced and verified');
+      return true;
     } catch (err) {
       debugLog('Settings sync failed: ' + err.message);
+      return false;
     }
   }
 
   // ===== Show App =====
-  function showApp() {
+  async function showApp() {
     $('#auth-screen').classList.remove('active');
     $('#app-screen').classList.add('active');
     $('#user-email').textContent = state.user?.email || 'Local User';
@@ -931,7 +973,11 @@ import { supabaseClient } from './supabase.js';
       avatarEl.textContent = (state.user?.email || 'L')[0].toUpperCase();
     }
     applySettingsToUI();
-    refreshAll();
+    // For signed-in users, always fetch fresh data from Supabase
+    if (state.user?.id && !state.isLocalMode) {
+      await syncFromSupabase();
+    }
+    await refreshAll();
   }
 
   // ===== Navigation =====
@@ -1035,7 +1081,7 @@ import { supabaseClient } from './supabase.js';
 
     expenseTypeSelect.addEventListener('change', updateQaCategories);
 
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const amount = parseFloat($('#qa-amount').value);
       if (!amount || amount <= 0) {
@@ -1052,15 +1098,16 @@ import { supabaseClient } from './supabase.js';
         date: $('#qa-date').value || undefined,
       });
 
-      addTransaction(tx);
-      form.reset();
-      typeSelect.value = 'expense';
-      expenseTypeSelect.value = 'variable';
-      expenseTypeSelect.closest('.form-group').style.display = '';
-      // Preserve the date the user selected, or default to today
-      $('#qa-date').value = getLocalDateString();
-      updateQaCategories();
-      showToast('Transaction added!', 'success');
+      await addTransaction(tx);
+      // Only reset form if add was successful (toast already shown by addTransaction)
+      if (state.transactions.some(t => t.id === tx.id)) {
+        form.reset();
+        typeSelect.value = 'expense';
+        expenseTypeSelect.value = 'variable';
+        expenseTypeSelect.closest('.form-group').style.display = '';
+        $('#qa-date').value = getLocalDateString();
+        updateQaCategories();
+      }
     });
   }
 
@@ -1094,7 +1141,7 @@ import { supabaseClient } from './supabase.js';
 
     $('#tx-date').value = getLocalDateString();
 
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const amount = parseFloat($('#tx-amount').value);
       if (!amount || amount <= 0) {
@@ -1111,12 +1158,14 @@ import { supabaseClient } from './supabase.js';
         date: $('#tx-date').value,
       });
 
-      addTransaction(tx);
-      closeModal();
-      form.reset();
-      $('#tx-date').value = getLocalDateString();
-      updateTxCategories();
-      showToast('Transaction added!', 'success');
+      await addTransaction(tx);
+      // Only close modal and reset if transaction was actually added
+      if (state.transactions.some(t => t.id === tx.id)) {
+        closeModal();
+        form.reset();
+        $('#tx-date').value = getLocalDateString();
+        updateTxCategories();
+      }
     });
   }
 
@@ -1152,31 +1201,106 @@ import { supabaseClient } from './supabase.js';
     return new Date(y, m - 1, d);
   }
 
-  function addTransaction(tx) {
-    tx._synced = false; // Mark as needing sync
+  async function addTransaction(tx) {
+    // For signed-in users: insert to Supabase first, verify, then update local state
+    if (state.user?.id && !state.isLocalMode) {
+      try {
+        const { data, error } = await supabaseClient.from('transactions').insert({
+          transaction_id: tx.id,
+          user_id: state.user.id,
+          type: tx.type,
+          amount: tx.amount,
+          category_key: tx.category,
+          expense_type: tx.expenseType,
+          description: tx.description,
+          date: tx.date,
+          created_at: tx.createdAt,
+        }).select();
+
+        if (error) throw error;
+        if (!data || data.length === 0) throw new Error('No data returned from insert');
+
+        // Verify the insert by checking if the row exists
+        const { data: verifyData, error: verifyError } = await supabaseClient
+          .from('transactions')
+          .select('*')
+          .eq('transaction_id', tx.id)
+          .eq('user_id', state.user.id)
+          .single();
+
+        if (verifyError || !verifyData) {
+          throw new Error('Transaction verification failed - not found in Supabase');
+        }
+
+        tx._synced = true;
+        state.transactions.unshift(tx);
+        saveToStorage();
+        refreshAll();
+        showToast('Transaction added successfully!', 'success');
+        return;
+      } catch (err) {
+        debugLog('Transaction insert failed: ' + err.message);
+        showToast('Failed to add transaction: ' + err.message, 'error');
+        return;
+      }
+    }
+
+    // Local mode: just add locally
+    tx._synced = false;
     state.transactions.unshift(tx);
     saveToStorage();
-    syncTransactionToSupabase(tx);
     refreshAll();
+    showToast('Transaction added!', 'success');
   }
 
-  function deleteTransaction(id) {
+  async function deleteTransaction(id) {
+    // For signed-in users: delete from Supabase first, verify, then update local state
+    if (state.user?.id && !state.isLocalMode) {
+      try {
+        const { error } = await supabaseClient.from('transactions').delete().eq('transaction_id', id);
+        if (error) throw error;
+
+        // Verify deletion
+        const { data: verifyData, error: verifyError } = await supabaseClient
+          .from('transactions')
+          .select('transaction_id')
+          .eq('transaction_id', id)
+          .eq('user_id', state.user.id)
+          .maybeSingle();
+
+        if (verifyError) throw verifyError;
+        if (verifyData) {
+          throw new Error('Transaction still exists in Supabase after deletion');
+        }
+
+        state.transactions = state.transactions.filter(t => t.id !== id);
+        saveToStorage();
+        refreshAll();
+        showToast('Transaction deleted successfully!', 'success');
+        return;
+      } catch (err) {
+        debugLog('Transaction delete failed: ' + err.message);
+        showToast('Failed to delete transaction: ' + err.message, 'error');
+        return;
+      }
+    }
+
+    // Local mode
     state.transactions = state.transactions.filter(t => t.id !== id);
     saveToStorage();
-    deleteTransactionFromSupabase(id);
     refreshAll();
     showToast('Transaction deleted', 'info');
   }
 
   // ===== Refresh All =====
-  function refreshAll() {
+  async function refreshAll() {
     updateStats();
     renderRecentTransactions();
     renderAllTransactions();
     renderCategoryBreakdown();
     calculateSurvivalScore();
     analyzeImpulsiveSpending();
-    checkNotifications();
+    await checkNotifications();
   }
 
   // ===== Stats =====
@@ -1283,7 +1407,7 @@ import { supabaseClient } from './supabase.js';
             <div class="tx-desc">${escapeHtml(tx.description)}</div>
             <div class="tx-meta">
               <span>${cat.label}</span>
-              ${showDate ? `<span>${formatDateTime(tx.createdAt || tx.date)}</span>` : ''}
+              ${showDate ? `<span>${formatDateOnly(tx.date)}</span>` : ''}
             </div>
           </div>
           ${badges.length ? `<div class="tx-badges" style="display: flex; flex-direction: column; align-items: center; gap: 2px;">${badges.join('')}</div>` : ''}
@@ -1300,9 +1424,9 @@ import { supabaseClient } from './supabase.js';
 
   function attachTransactionEvents(container) {
     container.querySelectorAll('.delete-tx').forEach(btn => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        deleteTransaction(btn.dataset.id);
+        await deleteTransaction(btn.dataset.id);
       });
     });
   }
@@ -1579,7 +1703,7 @@ import { supabaseClient } from './supabase.js';
     });
   }
 
-  function checkNotifications() {
+  async function checkNotifications() {
     const score = calculateSurvivalScore();
     const threshold = state.settings.survivalThreshold;
     const now = new Date();
@@ -1599,18 +1723,18 @@ import { supabaseClient } from './supabase.js';
     }
 
     if (income > 0) {
-      IMPULSIVE_CATEGORIES.forEach(cat => {
+      for (const cat of IMPULSIVE_CATEGORIES) {
         const catTotal = monthTx.filter(t => t.type === 'expense' && t.category === cat).reduce((s, t) => s + t.amount, 0);
         const pct = (catTotal / income) * 100;
         if (pct > state.settings.impulsiveThreshold) {
           const info = getCategoryConfig(cat);
-          addNotification({
+          await addNotification({
             type: 'warning',
             text: `${info.emoji} ${info.label} spending is at ${pct.toFixed(1)}% of income - exceeding your ${state.settings.impulsiveThreshold}% threshold.`,
             timestamp: new Date().toISOString(),
           });
         }
-      });
+      }
     }
 
     if (balance < 0) {
@@ -1636,7 +1760,7 @@ import { supabaseClient } from './supabase.js';
     updateNotifBadge();
   }
 
-  function addNotification(notif) {
+  async function addNotification(notif) {
     const oneDayAgo = new Date(Date.now() - 86400000).toISOString();
     const exists = state.notifications.some(n => n.text === notif.text && n.timestamp > oneDayAgo);
     // Skip if this notification was previously dismissed/cleared by the user
@@ -1644,7 +1768,18 @@ import { supabaseClient } from './supabase.js';
     if (!exists && !wasDismissed) {
       const newNotif = { ...notif, id: crypto.randomUUID ? crypto.randomUUID() : 'n_' + Date.now() };
       state.notifications.unshift(newNotif);
-      syncNotificationToSupabase(newNotif).catch(() => {});
+      saveToStorage();
+      // For signed-in users, sync to Supabase and verify
+      if (state.user?.id && !state.isLocalMode) {
+        const synced = await syncNotificationToSupabase(newNotif);
+        if (!synced) {
+          debugLog('Notification failed to sync to Supabase');
+          // Remove from local state since it didn't make it to Supabase
+          state.notifications = state.notifications.filter(n => n.id !== newNotif.id);
+          saveToStorage();
+          return;
+        }
+      }
     }
   }
 
@@ -1686,23 +1821,41 @@ import { supabaseClient } from './supabase.js';
       return;
     }
 
-    saveSettings.addEventListener('click', () => {
+    saveSettings.addEventListener('click', async () => {
       state.settings.survivalThreshold = parseInt($('#threshold-setting').value) || 20;
       state.settings.impulsiveThreshold = parseInt($('#impulsive-threshold').value) || 10;
       saveToStorage();
-      syncSettingsToSupabase();
-      refreshAll();
-      showToast('Settings saved!', 'success');
+      if (state.user?.id && !state.isLocalMode) {
+        const synced = await syncSettingsToSupabase();
+        if (synced) {
+          await refreshAll();
+          showToast('Settings saved successfully!', 'success');
+        } else {
+          showToast('Failed to save settings to server', 'error');
+        }
+      } else {
+        refreshAll();
+        showToast('Settings saved!', 'success');
+      }
     });
 
-    saveBudget.addEventListener('click', () => {
+    saveBudget.addEventListener('click', async () => {
       state.settings.monthlyIncome = parseFloat($('#monthly-income').value) || 0;
       state.settings.monthlyFixed = parseFloat($('#monthly-fixed').value) || 0;
       state.settings.monthlyBudget = parseFloat($('#monthly-budget').value) || 0;
       saveToStorage();
-      syncSettingsToSupabase();
-      refreshAll();
-      showToast('Budget saved!', 'success');
+      if (state.user?.id && !state.isLocalMode) {
+        const synced = await syncSettingsToSupabase();
+        if (synced) {
+          await refreshAll();
+          showToast('Budget saved successfully!', 'success');
+        } else {
+          showToast('Failed to save budget to server', 'error');
+        }
+      } else {
+        refreshAll();
+        showToast('Budget saved!', 'success');
+      }
     });
   }
 
@@ -1778,13 +1931,20 @@ import { supabaseClient } from './supabase.js';
       lightIcon.style.display = 'block';
     }
 
-    toggle.addEventListener('click', () => {
+    toggle.addEventListener('click', async () => {
       const isLight = document.body.classList.toggle('light-mode');
       darkIcon.style.display = isLight ? 'none' : 'block';
       lightIcon.style.display = isLight ? 'block' : 'none';
       state.settings.theme = isLight ? 'light' : 'dark';
       saveToStorage();
-      syncSettingsToSupabase();
+      if (state.user?.id && !state.isLocalMode) {
+        const synced = await syncSettingsToSupabase();
+        if (synced) {
+          showToast('Theme saved successfully!', 'success');
+        } else {
+          showToast('Failed to save theme to server', 'error');
+        }
+      }
     });
   }
 
@@ -1902,7 +2062,7 @@ import { supabaseClient } from './supabase.js';
         if (data.settings) state.settings = { ...state.settings, ...data.settings };
         state.notifications = [];
         saveToStorage();
-        if (state.user && !state.isLocalMode) await uploadLocalDataToSupabase();
+        // Local data upload disabled - data must come from Supabase only
         applySettingsToUI();
         refreshAll();
         showToast('Data imported!', 'success');
@@ -1912,28 +2072,48 @@ import { supabaseClient } from './supabase.js';
       e.target.value = '';
     });
 
-    clearBtn.addEventListener('click', () => {
+    clearBtn.addEventListener('click', async () => {
       if (confirm('Delete all transactions and reset settings?')) {
+        if (state.user && !state.isLocalMode) {
+          const cleared = await clearSupabaseData();
+          if (!cleared) {
+            showToast('Failed to clear data from server', 'error');
+            return;
+          }
+        }
         state.transactions = [];
         state.notifications = [];
         state.settings = { survivalThreshold: 20, impulsiveThreshold: 10, monthlyIncome: 0, monthlyFixed: 0, monthlyBudget: 0, theme: state.settings.theme };
         saveToStorage();
-        if (state.user && !state.isLocalMode) clearSupabaseData().catch(() => {});
         applySettingsToUI();
-        refreshAll();
-        showToast('All data cleared', 'info');
+        await refreshAll();
+        showToast('All data cleared successfully!', 'success');
       }
     });
   }
 
   async function clearSupabaseData() {
-    if (!state.user?.id || state.isLocalMode) return;
+    if (!state.user?.id || state.isLocalMode) return true;
     try {
       await supabaseClient.from('transactions').delete().eq('user_id', state.user.id);
       await supabaseClient.from('notifications').delete().eq('user_id', state.user.id);
       await supabaseClient.from('settings').delete().eq('user_id', state.user.id);
+
+      // Verify all data is cleared
+      const [{ data: txData }, { data: notifData }, { data: settingsData }] = await Promise.all([
+        supabaseClient.from('transactions').select('transaction_id').eq('user_id', state.user.id),
+        supabaseClient.from('notifications').select('notification_id').eq('user_id', state.user.id),
+        supabaseClient.from('settings').select('user_id').eq('user_id', state.user.id),
+      ]);
+
+      if ((txData && txData.length > 0) || (notifData && notifData.length > 0) || (settingsData && settingsData.length > 0)) {
+        throw new Error('Data still exists in Supabase after clear');
+      }
+
+      return true;
     } catch (err) {
       console.warn('Failed to clear Supabase data:', err);
+      return false;
     }
   }
 
@@ -1953,6 +2133,11 @@ import { supabaseClient } from './supabase.js';
   function formatDateTime(dateStr) {
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function formatDateOnly(dateStr) {
+    const d = parseLocalDate(dateStr);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   }
 
   function escapeHtml(str) {
